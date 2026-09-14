@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -43,19 +46,48 @@ BROWSER_HEADERS = {
 }
 
 
+# Try yt-dlp defaults first, then known working client sets.
+# Forcing only android/web was breaking Render (PO token / SABR).
+INSPECT_CLIENT_ATTEMPTS: tuple[list[str] | None, ...] = (
+    None,
+    ["android", "web"],
+    ["tv", "web_safari"],
+    ["tv_embedded", "ios", "mweb"],
+)
+YOUTUBE_ID_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?.*?v=|embed/|shorts/|live/|music/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})",
+    re.IGNORECASE,
+)
+
+
 def base_ydl_opts(**extra: Any) -> dict[str, Any]:
-    return {
+    clients = extra.pop("player_clients", None)
+    opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "nocheckcertificate": True,
-        "socket_timeout": 20,
+        "socket_timeout": 25,
+        "retries": 2,
         "geo_bypass": True,
         "user_agent": CHROME_UA,
         "http_headers": BROWSER_HEADERS,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-        **extra,
     }
+    if clients:
+        opts["extractor_args"] = {"youtube": {"player_client": list(clients)}}
+    cookie_file = os.getenv("YOUTUBE_COOKIES_FILE")
+    if cookie_file and Path(cookie_file).exists():
+        opts["cookiefile"] = cookie_file
+    opts.update(extra)
+    return opts
+
+
+def canonicalize_media_url(url: str) -> str:
+    match = YOUTUBE_ID_RE.search(url)
+    if match:
+        return f"https://www.youtube.com/watch?v={match.group(1)}"
+    return url
 
 
 def validate_url(url: str) -> str:
@@ -125,33 +157,90 @@ def metadata_thin(info: dict[str, Any] | None) -> bool:
     return not (has_title and has_thumb and has_duration)
 
 
-def inspect_url(url: str) -> InspectResponse:
-    cleaned = validate_url(url)
-    common = base_ydl_opts(skip_download=True)
+def inspect_via_ytdlp(url: str, clients: list[str] | None) -> dict[str, Any]:
+    opts = base_ydl_opts(skip_download=True, player_clients=clients)
+    with YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False) or {}
 
-    try:
-        with YoutubeDL({**common, "extract_flat": True}) as ydl:
-            info = ydl.extract_info(cleaned, download=False) or {}
-        if metadata_thin(info):
-            with YoutubeDL(common) as ydl:
-                info = ydl.extract_info(cleaned, download=False) or {}
-    except Exception as exc:
-        code, message = classify_ytdlp_error(exc)
-        raise RuntimeError(f"{code}|{message}") from exc
 
+def inspect_via_oembed(url: str) -> tuple[InspectResponse | None, bool]:
+    endpoints = (
+        f"https://www.youtube.com/oembed?format=json&url={quote(url, safe='')}",
+        f"https://noembed.com/embed?url={quote(url, safe='')}",
+    )
+    request_headers = {"User-Agent": CHROME_UA, "Accept": "application/json"}
+    not_found = False
+    for endpoint in endpoints:
+        try:
+            request = urllib.request.Request(endpoint, headers=request_headers)
+            with urllib.request.urlopen(request, timeout=12) as response:
+                data = json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                not_found = True
+            continue
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        title = str(data.get("title") or "").strip()
+        if not title:
+            continue
+        return InspectResponse(
+            title=title,
+            author=str(data.get("author_name") or data.get("author") or "Unknown"),
+            duration="00:00",
+            thumbnail=str(data.get("thumbnail_url") or ""),
+        ), False
+    return None, not_found
+
+
+def inspect_to_response(info: dict[str, Any]) -> InspectResponse:
     if is_live(info):
         raise RuntimeError(f"LIVE_STREAM|{MESSAGES['LIVE_STREAM']}")
-
     title = str(info.get("title") or info.get("fulltitle") or "").strip()
     if not title:
         raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
-
     return InspectResponse(
         title=title,
         author=pick_author(info),
         duration=format_duration(info.get("duration")),
         thumbnail=pick_thumbnail(info),
     )
+
+
+def inspect_url(url: str) -> InspectResponse:
+    cleaned = canonicalize_media_url(validate_url(url))
+    last_error: Exception | None = None
+    is_youtube = YOUTUBE_ID_RE.search(cleaned) is not None
+
+    if is_youtube:
+        fallback, oembed_missing = inspect_via_oembed(cleaned)
+        if fallback is not None:
+            return fallback
+        if oembed_missing:
+            raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
+
+    for clients in INSPECT_CLIENT_ATTEMPTS:
+        try:
+            info = inspect_via_ytdlp(cleaned, clients)
+            if metadata_thin(info):
+                continue
+            return inspect_to_response(info)
+        except Exception as exc:
+            last_error = exc
+            label = ",".join(clients) if clients else "default"
+            logger.warning("yt-dlp inspect failed (%s) for %s: %s", label, cleaned, exc)
+
+    fallback, oembed_missing = inspect_via_oembed(cleaned)
+    if fallback is not None:
+        logger.info("Inspect recovered via oEmbed for %s", cleaned)
+        return fallback
+
+    if oembed_missing or last_error is None:
+        raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
+    code, message = classify_ytdlp_error(last_error)
+    raise RuntimeError(f"{code}|{message}") from last_error
 
 
 def format_speed(bytes_per_sec: object) -> str:

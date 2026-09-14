@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN pip install --no-cache-dir -U yt-dlp
+RUN pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"
 
 EXPOSE 8000
 
