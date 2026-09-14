@@ -125,10 +125,21 @@ export default function Home() {
           body: JSON.stringify({ url: trimmed }),
           signal: controller.signal,
         });
-        const payload = (await response.json()) as MediaInfo & { message?: string };
+        let payload: MediaInfo & { message?: string; detail?: string };
+        try {
+          payload = (await response.json()) as MediaInfo & { message?: string; detail?: string };
+        } catch {
+          setMediaInfo(null);
+          setInspectError(
+            response.ok
+              ? '영상을 분석할 수 없습니다.'
+              : '영상을 분석할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+          );
+          return;
+        }
         if (!response.ok) {
           setMediaInfo(null);
-          setInspectError(payload.message || '영상을 분석할 수 없습니다.');
+          setInspectError(payload.detail || payload.message || '영상을 분석할 수 없습니다.');
           return;
         }
         setMediaInfo(payload);

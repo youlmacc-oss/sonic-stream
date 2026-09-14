@@ -15,6 +15,7 @@ MESSAGES: dict[str, str] = {
     "NETWORK_ERROR": "네트워크 연결이 끊겼습니다. 다시 시도해 주세요.",
     "JOB_NOT_FOUND": "다운로드 작업을 찾을 수 없습니다.",
     "PROCESS_FAILED": "변환에 실패했습니다. 다시 시도해 주세요.",
+    "EXTRACT_FAILED": "영상 정보를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.",
     "TIMEOUT": "시간이 초과되었습니다. 다시 시도해 주세요.",
     "NOT_READY": "파일이 아직 준비되지 않았습니다.",
 }
@@ -30,15 +31,25 @@ STATUS_BY_CODE: dict[str, int] = {
     "NETWORK_ERROR": 503,
     "JOB_NOT_FOUND": 404,
     "PROCESS_FAILED": 500,
+    "EXTRACT_FAILED": 422,
     "TIMEOUT": 504,
     "NOT_READY": 409,
 }
 
 
-def raise_api_error(code: str, status_code: int | None = None) -> NoReturn:
+def raise_api_error(
+    code: str,
+    status_code: int | None = None,
+    detail: str | None = None,
+) -> NoReturn:
+    message = MESSAGES.get(code, MESSAGES["PROCESS_FAILED"])
     raise HTTPException(
         status_code=status_code or STATUS_BY_CODE.get(code, 400),
-        detail={"code": code, "message": MESSAGES[code]},
+        detail={
+            "code": code,
+            "message": message,
+            "detail": (detail or message).strip() or message,
+        },
     )
 
 
@@ -95,4 +106,11 @@ def classify_ytdlp_error(exc: BaseException) -> tuple[str, str]:
         return "NOT_FOUND", MESSAGES["NOT_FOUND"]
     if "unsupported url" in text or "no video formats" in text:
         return "UNSUPPORTED_URL", MESSAGES["UNSUPPORTED_URL"]
+    if (
+        "failed to extract any player response" in text
+        or "failed to extract player response" in text
+        or "confirm you are on the latest version" in text
+        or "unable to extract" in text
+    ):
+        return "EXTRACT_FAILED", MESSAGES["EXTRACT_FAILED"]
     return "PROCESS_FAILED", MESSAGES["PROCESS_FAILED"]

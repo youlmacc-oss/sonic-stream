@@ -80,7 +80,11 @@ async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONR
         return JSONResponse(status_code=exc.status_code, content=detail)
     return JSONResponse(
         status_code=exc.status_code,
-        content={"code": "PROCESS_FAILED", "message": str(detail)},
+        content={
+            "code": "PROCESS_FAILED",
+            "message": str(detail),
+            "detail": str(detail),
+        },
     )
 
 
@@ -88,8 +92,36 @@ async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONR
 async def validation_handler(_request: Request, _exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(
         status_code=422,
-        content={"code": "PROCESS_FAILED", "message": MESSAGES["PROCESS_FAILED"]},
+        content={
+            "code": "PROCESS_FAILED",
+            "message": MESSAGES["PROCESS_FAILED"],
+            "detail": MESSAGES["PROCESS_FAILED"],
+        },
     )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled error: %s", exc)
+    message = MESSAGES["PROCESS_FAILED"]
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": "PROCESS_FAILED",
+            "message": message,
+            "detail": str(exc).strip() or message,
+        },
+    )
+
+
+def _inspect_error_payload(exc: BaseException) -> tuple[str, str]:
+    raw = str(exc).strip()
+    code, separator, remainder = raw.partition("|")
+    if separator and code in MESSAGES:
+        return code, remainder.strip() or MESSAGES[code]
+    if code in MESSAGES:
+        return code, MESSAGES[code]
+    return "EXTRACT_FAILED", raw or MESSAGES["EXTRACT_FAILED"]
 
 
 @app.post("/api/inspect", response_model=InspectResponse)
@@ -101,14 +133,12 @@ async def inspect(body: InspectRequest) -> InspectResponse:
 
     try:
         return await asyncio.to_thread(inspect_url, body.url)
-    except RuntimeError as exc:
-        payload = str(exc)
-        code, _, _message = payload.partition("|")
-        if code in MESSAGES:
-            raise_api_error(code)
-        raise_api_error("PROCESS_FAILED")
-    except Exception:
-        raise_api_error("PROCESS_FAILED")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Inspect failed for %s: %s", body.url, exc)
+        code, detail = _inspect_error_payload(exc)
+        raise_api_error(code, detail=detail)
 
 
 @app.post("/api/download", response_model=DownloadAccepted, status_code=202)

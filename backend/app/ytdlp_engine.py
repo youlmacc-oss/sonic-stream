@@ -23,15 +23,17 @@ UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 SKIP_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".part", ".ytdl", ".json", ".srt", ".vtt"}
 MEDIA_EXTS = {".mp4", ".mp3", ".flac", ".m4a", ".webm", ".mkv", ".mov"}
 
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/141.0.7390.122 Safari/537.36"
+)
+
 BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": CHROME_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
-    "Sec-Ch-Ua": '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+    "Sec-Ch-Ua": '"Google Chrome";v="141", "Chromium";v="141", "Not A(Brand";v="24"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
     "Sec-Fetch-Dest": "document",
@@ -39,6 +41,21 @@ BROWSER_HEADERS = {
     "Sec-Fetch-Site": "none",
     "Upgrade-Insecure-Requests": "1",
 }
+
+
+def base_ydl_opts(**extra: Any) -> dict[str, Any]:
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "socket_timeout": 20,
+        "geo_bypass": True,
+        "user_agent": CHROME_UA,
+        "http_headers": BROWSER_HEADERS,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        **extra,
+    }
 
 
 def validate_url(url: str) -> str:
@@ -110,15 +127,7 @@ def metadata_thin(info: dict[str, Any] | None) -> bool:
 
 def inspect_url(url: str) -> InspectResponse:
     cleaned = validate_url(url)
-    common = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "socket_timeout": 20,
-        "http_headers": BROWSER_HEADERS,
-    }
+    common = base_ydl_opts(skip_download=True)
 
     try:
         with YoutubeDL({**common, "extract_flat": True}) as ydl:
@@ -189,20 +198,14 @@ def make_progress_hook(job_id: str):
 
 def build_ydl_opts(job_id: str, media_type: MediaType, quality: MediaQuality, job_dir: Path) -> dict[str, Any]:
     outtmpl = str(job_dir / "%(title)s.%(ext)s")
-    opts: dict[str, Any] = {
-        "nocheckcertificate": True,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "windowsfilenames": True,
-        "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
-        "ignoreerrors": False,
-        "http_headers": BROWSER_HEADERS,
-        "progress_hooks": [make_progress_hook(job_id)],
-        "outtmpl": outtmpl,
-    }
+    opts = base_ydl_opts(
+        windowsfilenames=True,
+        retries=3,
+        fragment_retries=3,
+        ignoreerrors=False,
+        progress_hooks=[make_progress_hook(job_id)],
+        outtmpl=outtmpl,
+    )
     ffmpeg_dir = resolve_ffmpeg_dir()
     if ffmpeg_dir is not None:
         opts["ffmpeg_location"] = str(ffmpeg_dir)
