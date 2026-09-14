@@ -1,0 +1,26 @@
+# Python
+backend/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Next
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.pem

@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --color-obsidian: #0b0c10;
+  --color-neon-cyan: #00f0ff;
+  --color-accent-indigo: #6366f1;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+  --animate-border-beam: border-beam 7s linear infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes border-beam {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+html,
+body {
+  background-color: #0b0c10;
+  color: #f4f4f5;
+}
