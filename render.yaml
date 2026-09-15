@@ -1,10 +1,10 @@
-# Existing Render web service is sonic-stream-zc61.
-# Apply this Blueprint from the repo or set the dashboard to match:
-# branch=main, auto-deploy on, Docker, Dockerfile path ./Dockerfile, context ., health /health.
+# Matches the existing web service named sonic-stream (URL slug sonic-stream-zc61).
+# Dashboard should stay: Docker, Root Directory backend, branch main, health /health.
 services:
   - type: web
-    name: sonic-stream-zc61
+    name: sonic-stream
     runtime: docker
+    rootDir: backend
     dockerfilePath: ./Dockerfile
     dockerContext: .
     branch: main

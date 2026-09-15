@@ -1,8 +1,11 @@
 FROM python:3.11-slim
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DENO_INSTALL=/usr/local \
+    PATH="/usr/local/bin:${PATH}"
 
 WORKDIR /app
 
@@ -10,26 +13,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
-        curl \
-        unzip \
-    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && deno --version
 
 ARG RENDER_GIT_COMMIT=unknown
-ENV DENO_INSTALL=/usr/local \
-    PATH="/usr/local/bin:${PATH}" \
-    GIT_COMMIT=${RENDER_GIT_COMMIT}
+ENV GIT_COMMIT=${RENDER_GIT_COMMIT}
 
-COPY backend/requirements.txt .
+# Context may be repo root or backend/.
+COPY . /tmp/src
+RUN set -eu; \
+    if [ -f /tmp/src/backend/requirements.txt ]; then SRC=/tmp/src/backend; \
+    elif [ -f /tmp/src/requirements.txt ]; then SRC=/tmp/src; \
+    else echo "requirements.txt not found in build context" >&2; ls -la /tmp/src >&2; exit 1; \
+    fi; \
+    cp -a "$SRC"/. /app/; \
+    pip install --no-cache-dir -r /app/requirements.txt
 
-# stable = requirements pin. nightly = verified local track 2026.08.30.232658
 ARG YTDLP_TRACK=stable
-RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$YTDLP_TRACK" = "nightly" ]; then \
-        pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"; \
-    fi
-
-COPY backend/ .
+RUN if [ "$YTDLP_TRACK" = "nightly" ]; then pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"; fi
 
 EXPOSE 8000
 

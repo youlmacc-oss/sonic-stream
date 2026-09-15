@@ -16,7 +16,7 @@
 | JS runtime | Node 있음, Deno 없음 |
 | bgutil-ytdlp-pot-provider | 1.3.1 (플러그인, HTTP 공급자 별도) |
 
-배포 이미지 기본값은 `requirements.txt`의 안정 트랙(`yt-dlp[default]>=2026.8.24`)입니다. 컨테이너에는 Deno를 넣습니다. 로컬 Windows는 Node를 사용합니다.
+배포 이미지 기본값은 PyPI 안정 트랙(`yt-dlp[default]>=2026.8.19`)입니다. `>=2026.8.24`는 nightly에만 있어서 Render pip 빌드가 실패합니다. 컨테이너에는 Deno를 넣습니다. 로컬 Windows는 Node를 사용합니다.
 
 ### 업그레이드
 
