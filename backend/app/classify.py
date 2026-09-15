@@ -6,6 +6,9 @@ from dataclasses import dataclass
 USER_MESSAGES: dict[str, str] = {
     "INVALID_URL": "유효한 동영상 링크를 입력해 주세요.",
     "UNSUPPORTED_URL": "이 주소에서는 받을 수 있는 형식을 찾지 못했습니다.",
+    "FORMAT_UNAVAILABLE": "요청한 화질의 재생 형식을 찾지 못했습니다.",
+    "ROUTE_CONFIG": "다운로드 네트워크 경로가 설정되지 않았습니다.",
+    "ROUTE_COOL": "모든 네트워크 경로가 잠시 휴식 중입니다. 잠시 후 다시 시도해 주세요.",
     "NOT_FOUND": "영상을 찾을 수 없습니다.",
     "GEO_RESTRICTED": "이 영상은 지역 제한으로 받을 수 없습니다.",
     "RATE_LIMITED": "요청이 많아 잠시 대기한 뒤 다시 시도합니다.",
@@ -35,6 +38,9 @@ USER_MESSAGES: dict[str, str] = {
 STATUS_BY_CODE: dict[str, int] = {
     "INVALID_URL": 400,
     "UNSUPPORTED_URL": 400,
+    "FORMAT_UNAVAILABLE": 422,
+    "ROUTE_CONFIG": 503,
+    "ROUTE_COOL": 429,
     "NOT_FOUND": 404,
     "GEO_RESTRICTED": 403,
     "RATE_LIMITED": 429,
@@ -72,13 +78,14 @@ TERMINAL_CODES = {
     "COOKIE_INVALID",
     "PROXY_AUTH",
     "FFMPEG_FAILED",
+    "ROUTE_CONFIG",
 }
 
 WAIT_CODES = {"RATE_LIMITED"}
 COOL_ROUTE_CODES = {"BOT_CHECK"}
 SWITCH_ROUTE_CODES = {"BOT_CHECK", "STREAM_FORBIDDEN", "PROXY_CONNECT"}
 RETRY_NETWORK_CODES = {"NETWORK_ERROR", "TIMEOUT", "STREAM_EXPIRED"}
-RETRY_CLIENT_CODES = {"EXTRACT_FAILED", "JS_RUNTIME", "POT_MISSING", "POT_FAILED"}
+RETRY_CLIENT_CODES = {"EXTRACT_FAILED", "JS_RUNTIME", "POT_MISSING", "POT_FAILED", "FORMAT_UNAVAILABLE"}
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,7 @@ class ClassifiedError:
     message: str
     retry_after: float | None = None
     http_status: int | None = None
+    cause_message: str | None = None
 
     @property
     def user_message(self) -> str:
@@ -101,22 +109,61 @@ def parse_retry_after(text: str) -> float | None:
     if not match:
         return None
     try:
-        return min(120.0, max(1.0, float(match.group(1))))
+        return max(1.0, float(match.group(1)))
     except ValueError:
         return None
 
 
-def classify_error(exc: BaseException) -> ClassifiedError:
-    text = str(exc)
+def exception_chain_text(exc: BaseException | None) -> str:
+    if exc is None:
+        return ""
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return " | ".join(parts)
+
+
+def http_status_from_exc(exc: BaseException | None) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for attr in ("status", "code", "status_code"):
+            value = getattr(current, attr, None)
+            if isinstance(value, int) and 100 <= value <= 599:
+                return value
+        response = getattr(current, "response", None)
+        if response is not None:
+            for attr in ("status", "status_code", "code"):
+                value = getattr(response, attr, None)
+                if isinstance(value, int) and 100 <= value <= 599:
+                    return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def classify_error(exc: BaseException, *, stage: str | None = None) -> ClassifiedError:
+    text = exception_chain_text(exc) or str(exc)
     lowered = text.lower()
     name = type(exc).__name__.lower()
     retry_after = parse_retry_after(text)
+    observed = http_status_from_exc(exc)
+    if observed is None:
+        from app.diagnostics import extract_http_status
+
+        observed = extract_http_status(text)
 
     def result(code: str) -> ClassifiedError:
         return ClassifiedError(
             code=code,
             message=USER_MESSAGES.get(code, USER_MESSAGES["UNKNOWN"]),
             retry_after=retry_after,
+            http_status=observed,
+            cause_message=text[:800],
         )
 
     if name in {"downloadcancelled", "cancellederror"} or "cancelled" in lowered and "job" in lowered:
@@ -155,7 +202,11 @@ def classify_error(exc: BaseException) -> ClassifiedError:
         return result("JS_RUNTIME")
     if "ffmpeg" in lowered and ("error" in lowered or "failed" in lowered or "not found" in lowered):
         return result("FFMPEG_FAILED")
-    if "403" in lowered and ("googlevideo" in lowered or "fragment" in lowered or "http error 403" in lowered):
+    if (observed == 403 or "http error 403" in lowered) and (
+        "googlevideo" in lowered or "fragment" in lowered or "videoplayback" in lowered
+    ):
+        return result("STREAM_FORBIDDEN")
+    if (observed == 403 or "http error 403" in lowered) and stage == "download":
         return result("STREAM_FORBIDDEN")
     if "expired" in lowered and ("url" in lowered or "signature" in lowered or "n sig" in lowered):
         return result("STREAM_EXPIRED")
@@ -171,8 +222,10 @@ def classify_error(exc: BaseException) -> ClassifiedError:
         or "this video is unavailable" in lowered
     ):
         return result("NOT_FOUND")
-    if "no video formats" in lowered or "requested format is not available" in lowered:
-        return result("UNSUPPORTED_URL")
+    if "requested format is not available" in lowered:
+        return result("FORMAT_UNAVAILABLE")
+    if "no video formats" in lowered:
+        return result("FORMAT_UNAVAILABLE")
     if (
         "failed to extract any player response" in lowered
         or "failed to extract player response" in lowered

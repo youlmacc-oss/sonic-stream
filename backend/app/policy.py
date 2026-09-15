@@ -17,7 +17,7 @@ class AttemptDecision:
 
 def backoff_delay(waits_used: int, retry_after: float | None) -> float:
     if retry_after is not None:
-        return min(120.0, max(1.0, retry_after))
+        return max(1.0, retry_after)
     return min(60.0, (2 ** waits_used) + 0.35)
 
 
@@ -35,6 +35,7 @@ def decide_next(
     has_next_route: bool,
     can_use_cookies: bool,
     retry_after: float | None = None,
+    remaining_seconds: float | None = None,
 ) -> AttemptDecision:
     if attempts >= max_attempts:
         return AttemptDecision("fail")
@@ -50,7 +51,10 @@ def decide_next(
     if code == "RATE_LIMITED":
         if waits_used >= max_waits:
             return AttemptDecision("fail")
-        return AttemptDecision("wait", delay=backoff_delay(waits_used, retry_after))
+        delay = backoff_delay(waits_used, retry_after)
+        if remaining_seconds is not None and delay > remaining_seconds:
+            return AttemptDecision("fail")
+        return AttemptDecision("wait", delay=delay)
 
     if code == "BOT_CHECK":
         if can_use_cookies:

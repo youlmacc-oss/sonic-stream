@@ -40,7 +40,7 @@ SENSITIVE_KEYS = {
     "secret",
 }
 
-HTTP_STATUS_RE = re.compile(r"\b(?:http(?:\s*error)?|status)\s*[:=]?\s*(\d{3})\b|\b([1-5]\d{2})\b", re.I)
+HTTP_STATUS_RE = re.compile(r"(?:http(?:\s*error)?|status|HTTP/[\d.]+)\s*[:=]?\s*(\d{3})\b", re.I)
 YOUTUBE_ID_RE = re.compile(
     r"(?:youtube\.com/(?:watch\?.*?v=|embed/|shorts/|live/|music/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})",
@@ -79,7 +79,7 @@ def mask_value(value: Any, *, limit: int = 800, depth: int = 0) -> Any:
             out[name] = "[redacted]" if _key_sensitive(name) else mask_value(item, limit=limit, depth=depth + 1)
         return out
     if isinstance(value, (list, tuple)):
-        return [mask_value(item, limit=limit, depth=depth + 1) for item in list(value)[:50]]
+        return [mask_value(item, limit=limit, depth=depth + 1) for item in list(value)]
     return mask_text(str(value), limit)
 
 
@@ -112,7 +112,7 @@ def extract_http_status(text: str | None) -> int | None:
     match = HTTP_STATUS_RE.search(text)
     if not match:
         return None
-    raw = match.group(1) or match.group(2)
+    raw = match.group(1)
     try:
         status = int(raw)
     except ValueError:

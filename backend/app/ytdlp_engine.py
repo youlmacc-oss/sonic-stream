@@ -20,6 +20,7 @@ from yt_dlp.utils import DownloadCancelled
 from app.classify import classify_error
 from app.diagnostics import diagnostic_record, mask_text
 from app.errors import MESSAGES
+from app.quality import video_format_selector
 from app.gc import delete_job_dir, job_dir_for
 from app.jobs import store
 from app.models import InspectResponse, MediaQuality, MediaType
@@ -122,6 +123,44 @@ def inspect_client_attempts() -> list[list[str] | None]:
     return [None, ["web_safari"], ["android_vr"]]
 
 
+class JobYDLLogger:
+    def __init__(self, job_id: str, attempt_number: int | None = None, request_id: str | None = None) -> None:
+        self.job_id = job_id
+        self.attempt_number = attempt_number
+        self.request_id = request_id
+
+    def debug(self, msg: object) -> None:
+        self._emit(str(msg), "debug")
+
+    def info(self, msg: object) -> None:
+        self._emit(str(msg), "info")
+
+    def warning(self, msg: object) -> None:
+        self._emit(str(msg), "warning", force=True)
+
+    def error(self, msg: object) -> None:
+        self._emit(str(msg), "error", force=True)
+
+    def _emit(self, text: str, level: str, *, force: bool = False) -> None:
+        lowered = text.lower()
+        interesting = any(
+            token in lowered
+            for token in ("po token", "potoken", "js challenge", "javascript", "player_client", "format")
+        )
+        if not force and not interesting:
+            return
+        emit_event(
+            event="warning",
+            stage="extract",
+            request_id=self.request_id,
+            job_id=self.job_id,
+            attempt_number=self.attempt_number,
+            error_message=text,
+            origin="external",
+            extra={"log_level": level},
+        )
+
+
 def apply_ip_mode(opts: dict[str, Any]) -> dict[str, Any]:
     mode = (os.getenv("YOUTUBE_IP_MODE") or "").strip().lower()
     if mode == "ipv4":
@@ -141,7 +180,7 @@ def base_ydl_opts(
     extra.pop("player_clients", None)
     opts: dict[str, Any] = {
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,
         "noplaylist": True,
         "socket_timeout": 25,
         "retries": 1,
@@ -332,8 +371,12 @@ def make_progress_hook(job_id: str):
             total = payload.get("total_bytes") or payload.get("total_bytes_estimate") or 0
             downloaded = payload.get("downloaded_bytes") or 0
             percent = 0.0
+            detail = "영상 정보 확인 중..."
             if total:
                 percent = min(100.0, downloaded / total * 100.0)
+                detail = ""
+            elif downloaded:
+                detail = "받는 중 (전체 크기 미확인)"
             eta_raw = payload.get("eta")
             eta = int(eta_raw) if isinstance(eta_raw, (int, float)) else None
             store.update(
@@ -342,6 +385,7 @@ def make_progress_hook(job_id: str):
                 percent=round(percent, 1),
                 speed=format_speed(payload.get("speed")),
                 eta=eta,
+                detail=detail,
             )
         elif status == "finished":
             job = store.get(job_id)
@@ -363,6 +407,8 @@ def build_ydl_opts(
     player_clients: list[str] | None = None,
     proxy: str | None = None,
     use_cookies: bool = False,
+    attempt_number: int | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     outtmpl = str(job_dir / "%(title)s.%(ext)s")
     opts = base_ydl_opts(
@@ -372,6 +418,7 @@ def build_ydl_opts(
         windowsfilenames=True,
         progress_hooks=[make_progress_hook(job_id)],
         outtmpl=outtmpl,
+        logger=JobYDLLogger(job_id, attempt_number, request_id),
     )
     ffmpeg_dir = resolve_ffmpeg_dir()
     if ffmpeg_dir is not None:
@@ -380,11 +427,7 @@ def build_ydl_opts(
     if media_type == "video":
         opts.update(
             {
-                "format": (
-                    "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
-                    if quality == "1080p"
-                    else "bestvideo[height<=2160]+bestaudio/best"
-                ),
+                "format": video_format_selector(quality),
                 "merge_output_format": "mp4",
                 "postprocessors": [{"key": "FFmpegMetadata"}],
                 "postprocessor_args": {
@@ -540,7 +583,8 @@ def _fail_job(job_id: str, url: str, media_type: str, quality: str, exc: BaseExc
         request_id=request_id,
         job_id=job_id,
         error_code=code,
-        error_message=message,
+        error_message=str(exc),
+        user_message=message,
         exc=exc,
         url=url,
         media_type=media_type,
@@ -576,7 +620,14 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
         pot_ok = pot_ready()
         clients = download_client_attempts(use_cookies=use_cookies or has_cookies(), pot_ok=pot_ok)
         client_index = 0
-        routes = available_routes() or configured_routes()
+        configured = configured_routes()
+        if not configured:
+            _fail_job(job_id, url, media_type, quality, RuntimeError("ROUTE_CONFIG"), "ROUTE_CONFIG", MESSAGES["ROUTE_CONFIG"])
+            return
+        routes = available_routes()
+        if not routes:
+            _fail_job(job_id, url, media_type, quality, RuntimeError("ROUTE_COOL"), "ROUTE_COOL", MESSAGES["ROUTE_COOL"])
+            return
         route = routes[0]
         attempts = 0
         waits_used = 0
@@ -634,6 +685,8 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     player_clients=clients_now,
                     proxy=route.proxy,
                     use_cookies=use_cookies,
+                    attempt_number=attempts,
+                    request_id=request_id,
                 )
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(cleaned, download=False) or {}
@@ -702,7 +755,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     classified_code, classified_message = "PROCESS_FAILED", MESSAGES["PROCESS_FAILED"]
                     retry_after = None
                 else:
-                    classified = classify_error(exc)
+                    classified = classify_error(exc, stage=stage)
                     classified_code, classified_message = classified.code, classified.user_message
                     retry_after = classified.retry_after
 
@@ -730,7 +783,8 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     job_id=job_id,
                     attempt_number=attempts,
                     error_code=classified_code,
-                    error_message=classified_message,
+                    error_message=str(exc),
+                    user_message=classified_message,
                     exc=exc,
                     client=",".join(clients_now) if clients_now else "default",
                     route_alias=route.alias,
@@ -760,6 +814,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     has_next_route=next_route(route.alias) is not None,
                     can_use_cookies=can_use_cookies,
                     retry_after=retry_after,
+                    remaining_seconds=deadline - time.time(),
                 )
                 if decision.cool_seconds and decision.action in {"fail", "switch_route"}:
                     cool_route(route.alias, decision.cool_seconds)

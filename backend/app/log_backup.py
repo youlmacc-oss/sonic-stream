@@ -71,6 +71,11 @@ class LogBackup:
                 if key in copied or key in pending:
                     continue
                 pending.append(key)
+            current = self.store.current_path
+            if current.exists() and current.stat().st_size > 0:
+                key = str(current.resolve())
+                if key not in copied and key not in pending:
+                    pending.append(key)
             data["pending"] = pending
             self.pending_count = len(pending)
             self._save_index(data)

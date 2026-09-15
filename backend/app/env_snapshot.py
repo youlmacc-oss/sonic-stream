@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version as pkg_version
+from pathlib import Path
 from typing import Any
 
 from app.limiter import limiter
@@ -110,7 +112,40 @@ def capture_snapshot() -> dict[str, Any]:
         },
     }
     _SNAPSHOT = snapshot
+    persist_snapshot(snapshot)
     return snapshot
+
+
+def snapshot_dir() -> Path:
+    from app.log_store import default_log_dir
+
+    return default_log_dir() / "snapshots"
+
+
+def persist_snapshot(snapshot: dict[str, Any]) -> Path | None:
+    try:
+        directory = snapshot_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{snapshot['snapshot_id']}.json"
+        path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        return path
+    except OSError:
+        return None
+
+
+def load_snapshot(snapshot_id_value: str | None) -> dict[str, Any] | None:
+    if not snapshot_id_value:
+        return None
+    if _SNAPSHOT and _SNAPSHOT.get("snapshot_id") == snapshot_id_value:
+        return _SNAPSHOT
+    path = snapshot_dir() / f"{snapshot_id_value}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def current_snapshot() -> dict[str, Any]:

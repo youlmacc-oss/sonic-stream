@@ -18,6 +18,7 @@ def snapshot_event(job: Job) -> tuple[str, dict[str, Any]]:
             "status": "error",
             "code": job.error_code or "PROCESS_FAILED",
             "message": job.error_message or MESSAGES["PROCESS_FAILED"],
+            "job_id": job.id,
         }
     if job.status == "done":
         return "complete", {

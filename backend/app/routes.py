@@ -35,8 +35,6 @@ def configured_routes() -> list[NetworkRoute]:
     if legacy and not any(route.alias == "proxy" for route in routes):
         routes.append(NetworkRoute("proxy", legacy))
 
-    if not routes:
-        routes.append(NetworkRoute("direct", None))
     return routes
 
 

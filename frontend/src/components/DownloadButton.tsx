@@ -188,13 +188,13 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
       closeStream();
       setStatus('error');
       setErrorMessage(message || '다시 시도해 주세요');
-      resetIdleSoon();
     };
 
     source.addEventListener('error', (event) => {
       if ('data' in event && typeof event.data === 'string' && event.data) {
         const data = parseEventData(event.data);
-        fail(data?.message || '다운로드 실패 (재시도)');
+        const suffix = ` 문의번호 ${jobId}`;
+        fail(`${data?.message || '다운로드 실패 (재시도)'}${suffix}`);
         return;
       }
       if (source.readyState === EventSource.CLOSED) {
@@ -405,7 +405,7 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
               >
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span className="truncate">
-                  다운로드 실패: {errorMessage || '다시 시도해 주세요'}
+                  {errorMessage || '다시 시도해 주세요'}
                 </span>
               </motion.div>
             )}

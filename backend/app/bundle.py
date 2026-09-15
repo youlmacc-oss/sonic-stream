@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.diagnostics import SCHEMA_VERSION, mask_value
-from app.env_snapshot import current_snapshot
+from app.env_snapshot import current_snapshot, load_snapshot
 from app.eventlog import ANALYSIS_PROMPT
 from app.log_store import get_store
 
@@ -52,10 +52,10 @@ def build_bundle(
         missing.append("legacy_schema_present")
     env = current_snapshot()
     used_snapshot = None
-    for item in records:
-        if item.get("snapshot_id") == env.get("snapshot_id"):
-            used_snapshot = env
-            break
+    bound_id = next((item.get("snapshot_id") for item in records if item.get("snapshot_id")), None)
+    used_snapshot = load_snapshot(bound_id) if bound_id else None
+    if used_snapshot is None and bound_id and bound_id == env.get("snapshot_id"):
+        used_snapshot = env
     if used_snapshot is None:
         used_snapshot = {"note": "failure-time snapshot not found in this process", "current": env}
         missing.append("environment_snapshot_not_bound")
@@ -93,7 +93,7 @@ def build_bundle(
         "reproduction": reproduction,
         "analysis_prompt": ANALYSIS_PROMPT,
     }
-    return mask_value(bundle)
+    return bundle
 
 
 def bundle_json_bytes(bundle: dict[str, Any]) -> bytes:

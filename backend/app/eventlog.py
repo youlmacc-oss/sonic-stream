@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.classify import exception_chain_text, http_status_from_exc
 from app.diagnostics import SCHEMA_VERSION, extract_http_status, mask_text, mask_value, sanitize_url, video_id_from_url
 from app.env_snapshot import snapshot_id
 from app.log_store import get_store
@@ -34,6 +35,7 @@ def emit_event(
     error_code: str | None = None,
     error_type: str | None = None,
     error_message: str | None = None,
+    user_message: str | None = None,
     exc: BaseException | None = None,
     http_status: int | None = None,
     elapsed_ms: int | None = None,
@@ -49,15 +51,17 @@ def emit_event(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     try:
-        message = error_message
+        raw = error_message
         err_type = error_type
         stack = None
         if exc is not None:
             err_type = err_type or type(exc).__name__
-            message = message or str(exc)
+            raw = exception_chain_text(exc) or raw or str(exc)
             if origin == "internal" or (origin is None and error_code in {None, "PROCESS_FAILED", "UNKNOWN"}):
                 stack = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        observed_status = http_status if http_status is not None else extract_http_status(message or "")
+        observed_status = http_status if http_status is not None else http_status_from_exc(exc)
+        if observed_status is None:
+            observed_status = extract_http_status(raw or "")
         record = {
             "schema_version": SCHEMA_VERSION,
             "event_id": uuid.uuid4().hex,
@@ -71,7 +75,8 @@ def emit_event(
             "error_code": error_code,
             "error_type": err_type,
             "http_status": observed_status,
-            "error_message": mask_text(message, 400) if message else None,
+            "error_message": mask_text(raw, 800) if raw else None,
+            "user_message": mask_text(user_message, 400) if user_message else None,
             "traceback": mask_text(stack, 4000) if stack else None,
             "elapsed_ms": elapsed_ms,
             "retry_in_ms": retry_in_ms,
