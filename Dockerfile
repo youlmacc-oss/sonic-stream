@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+COPY --from=node:24-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +14,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
-        nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && deno --version \
     && node --version

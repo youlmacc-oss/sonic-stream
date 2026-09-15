@@ -12,12 +12,12 @@ def js_runtime_status() -> dict[str, bool]:
 
 def enabled_js_runtimes() -> dict[str, dict[str, str]]:
     status = js_runtime_status()
-    runtimes: dict[str, dict[str, str]] = {}
-    if status["deno"]:
-        runtimes["deno"] = {}
+    # Prefer Node when both exist; cookie-free local success used Node only.
     if status["node"]:
-        runtimes["node"] = {}
-    return runtimes
+        return {"node": {}}
+    if status["deno"]:
+        return {"deno": {}}
+    return {}
 
 
 def ejs_package_present() -> bool:

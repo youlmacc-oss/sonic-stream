@@ -18,6 +18,7 @@ from app.log_store import reset_store
 from app.policy import decide_next
 from app.quality import format_fits_quality, pick_video_format
 from app.routes import configured_routes
+from app.runtime import enabled_js_runtimes
 from app.ytdlp_engine import JobYDLLogger
 from app.youtube_auth import apply_youtube_auth, cookie_state, resolve_cookiefile
 
@@ -197,6 +198,12 @@ class OpsFixTests(unittest.TestCase):
         self.assertTrue(format_fits_quality(tall1080, "1080p"))
         chosen = pick_video_format([portrait, landscape, tall1080], "1080p")
         self.assertEqual(chosen["format_id"], "t")
+
+    def test_js_runtime_prefers_node_when_both_exist(self) -> None:
+        with patch("app.runtime.js_runtime_status", return_value={"deno": True, "node": True}):
+            self.assertEqual(enabled_js_runtimes(), {"node": {}})
+        with patch("app.runtime.js_runtime_status", return_value={"deno": True, "node": False}):
+            self.assertEqual(enabled_js_runtimes(), {"deno": {}})
 
     def test_empty_cookie_leftovers_do_not_attach(self) -> None:
         with patch.dict(os.environ, {"YOUTUBE_COOKIES": "*", "YOUTUBE_COOKIES_FILE": ""}, clear=False):
