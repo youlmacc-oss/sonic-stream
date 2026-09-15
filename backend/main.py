@@ -29,6 +29,7 @@ from app.ytdlp_engine import (
     validate_combo,
     validate_url,
 )
+from app.youtube_auth import auth_status, log_auth_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sonicstream")
@@ -41,6 +42,7 @@ async def lifespan(_app: FastAPI):
         logger.info("FFmpeg detected at %s", ffmpeg_dir)
     else:
         logger.warning("FFmpeg not found. Muxing and ID3 embedding will fail.")
+    log_auth_status()
     sweep_expired()
 
     async def ttl_loop() -> None:
@@ -225,5 +227,5 @@ async def fetch(job_id: str) -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    return {"status": "ok", "youtube": auth_status()}

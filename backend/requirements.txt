@@ -3,5 +3,6 @@ uvicorn[standard]==0.53.0
 starlette==1.6.0
 pydantic==2.13.5
 yt-dlp[default]
+curl_cffi
 sse-starlette==3.4.11
 python-multipart==0.0.32

@@ -18,6 +18,7 @@ from app.errors import MESSAGES, classify_ytdlp_error
 from app.gc import delete_job_dir, job_dir_for
 from app.jobs import store
 from app.models import InspectResponse, MediaQuality, MediaType
+from app.youtube_auth import apply_youtube_auth, has_cookies
 
 logger = logging.getLogger("sonicstream.ytdlp")
 
@@ -82,12 +83,22 @@ def base_ydl_opts(**extra: Any) -> dict[str, Any]:
         "remote_components": ["ejs:github"],
     }
     if clients:
-        opts["extractor_args"] = {"youtube": {"player_client": list(clients)}}
-    cookie_file = os.getenv("YOUTUBE_COOKIES_FILE")
-    if cookie_file and Path(cookie_file).exists():
-        opts["cookiefile"] = cookie_file
+        youtube_args = opts.setdefault("extractor_args", {}).setdefault("youtube", {})
+        youtube_args["player_client"] = list(clients)
     opts.update(extra)
-    return opts
+    return apply_youtube_auth(opts)
+
+
+def inspect_client_attempts() -> tuple[list[str] | None, ...]:
+    if has_cookies():
+        return (None, ["web_safari", "ios"], ["web"])
+    return INSPECT_CLIENT_ATTEMPTS
+
+
+def download_client_attempts() -> tuple[list[str] | None, ...]:
+    if has_cookies():
+        return (None, ["web_safari", "ios"], ["web"])
+    return DOWNLOAD_CLIENT_ATTEMPTS
 
 
 def canonicalize_media_url(url: str) -> str:
@@ -228,7 +239,7 @@ def inspect_url(url: str) -> InspectResponse:
         if oembed_missing:
             raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
 
-    for clients in INSPECT_CLIENT_ATTEMPTS:
+    for clients in inspect_client_attempts():
         try:
             info = inspect_via_ytdlp(cleaned, clients)
             if metadata_thin(info):
@@ -461,7 +472,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
     try:
         cleaned = canonicalize_media_url(validate_url(url))
         last_error: Exception | None = None
-        for clients in DOWNLOAD_CLIENT_ATTEMPTS:
+        for clients in download_client_attempts():
             try:
                 opts = build_ydl_opts(job_id, media_type, quality, job_dir, player_clients=clients)
                 with YoutubeDL(opts) as ydl:

@@ -10,7 +10,7 @@ MESSAGES: dict[str, str] = {
     "NOT_FOUND": "영상을 찾을 수 없습니다.",
     "GEO_RESTRICTED": "이 영상은 지역 제한으로 받을 수 없습니다.",
     "RATE_LIMITED": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
-    "BOT_CHECK": "YouTube가 요청을 차단했습니다. 잠시 후 다시 시도해 주세요.",
+    "BOT_CHECK": "YouTube가 서버 IP를 차단했습니다. 쿠키 또는 프록시 설정 후 다시 시도해 주세요.",
     "LIVE_STREAM": "라이브 스트림은 지원하지 않습니다.",
     "AGE_RESTRICTED": "연령 제한 영상은 받을 수 없습니다.",
     "NETWORK_ERROR": "네트워크 연결이 끊겼습니다. 다시 시도해 주세요.",
