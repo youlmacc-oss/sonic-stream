@@ -19,6 +19,7 @@ from app.policy import decide_next
 from app.quality import format_fits_quality, pick_video_format
 from app.routes import configured_routes
 from app.ytdlp_engine import JobYDLLogger
+from app.youtube_auth import apply_youtube_auth, cookie_state, resolve_cookiefile
 
 
 class OpsFixTests(unittest.TestCase):
@@ -196,6 +197,18 @@ class OpsFixTests(unittest.TestCase):
         self.assertTrue(format_fits_quality(tall1080, "1080p"))
         chosen = pick_video_format([portrait, landscape, tall1080], "1080p")
         self.assertEqual(chosen["format_id"], "t")
+
+    def test_empty_cookie_leftovers_do_not_attach(self) -> None:
+        with patch.dict(os.environ, {"YOUTUBE_COOKIES": "*", "YOUTUBE_COOKIES_FILE": ""}, clear=False):
+            self.assertEqual(cookie_state(), "missing")
+            self.assertIsNone(resolve_cookiefile())
+            self.assertNotIn("cookiefile", apply_youtube_auth({}, use_cookies=True))
+        leftover = self.dir / "empty-cookies.txt"
+        leftover.write_text("not a netscape file\n", encoding="utf-8")
+        with patch.dict(os.environ, {"YOUTUBE_COOKIES": "", "YOUTUBE_COOKIES_FILE": str(leftover)}, clear=False):
+            self.assertEqual(cookie_state(), "invalid_format")
+            self.assertIsNone(resolve_cookiefile())
+            self.assertNotIn("cookiefile", apply_youtube_auth({}, use_cookies=True))
 
     def test_fallback_success_summarized_as_success(self) -> None:
         emit_event(event="failed", stage="extract", job_id="job-fb", error_code="BOT_CHECK", extra={"final": False})

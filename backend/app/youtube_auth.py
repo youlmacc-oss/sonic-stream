@@ -31,10 +31,27 @@ def _looks_like_netscape(text: str) -> bool:
     return False
 
 
+def _is_placeholder(text: str) -> bool:
+    cleaned = text.strip().strip("\"'")
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if lowered in {"*", "null", "none", "undefined", "changeme", "change-me", "your_cookies_here", "todo"}:
+        return True
+    return set(cleaned) <= {"*", ".", "-", " "}
+
+
+def _cookie_env_text() -> str:
+    raw = (os.getenv("YOUTUBE_COOKIES") or "").strip()
+    if _is_placeholder(raw):
+        return ""
+    return raw.replace("\\n", "\n")
+
+
 def cookie_state() -> CookieState:
     path = (os.getenv("YOUTUBE_COOKIES_FILE") or "").strip()
     if path:
-        if not Path(path).exists():
+        if _is_placeholder(path) or not Path(path).exists():
             return "missing"
         try:
             text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -42,24 +59,22 @@ def cookie_state() -> CookieState:
             return "missing"
         return "file_present" if _looks_like_netscape(text) else "invalid_format"
 
-    raw = (os.getenv("YOUTUBE_COOKIES") or "").strip()
-    if not raw:
+    text = _cookie_env_text()
+    if not text:
         return "missing"
-    text = raw.replace("\\n", "\n")
     return "file_present" if _looks_like_netscape(text) else "invalid_format"
 
 
 def resolve_cookiefile() -> str | None:
     global _cached_hash, _cached_path
-    path = (os.getenv("YOUTUBE_COOKIES_FILE") or "").strip()
-    if path:
-        return path if Path(path).exists() else None
-
-    raw = (os.getenv("YOUTUBE_COOKIES") or "").strip()
-    if not raw:
+    if cookie_state() != "file_present":
         return None
-    text = raw.replace("\\n", "\n")
-    if not _looks_like_netscape(text):
+    path = (os.getenv("YOUTUBE_COOKIES_FILE") or "").strip()
+    if path and not _is_placeholder(path) and Path(path).exists() and _looks_like_netscape(Path(path).read_text(encoding="utf-8", errors="replace")):
+        return path
+
+    text = _cookie_env_text()
+    if not text or not _looks_like_netscape(text):
         return None
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     with _lock:

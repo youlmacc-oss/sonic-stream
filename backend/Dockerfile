@@ -13,8 +13,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
+        nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && deno --version
+    && deno --version \
+    && node --version
 
 ARG RENDER_GIT_COMMIT=unknown
 ENV GIT_COMMIT=${RENDER_GIT_COMMIT}
@@ -29,8 +31,12 @@ RUN set -eu; \
     cp -a "$SRC"/. /app/; \
     pip install --no-cache-dir -r /app/requirements.txt
 
-ARG YTDLP_TRACK=stable
-RUN if [ "$YTDLP_TRACK" = "nightly" ]; then pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"; fi
+# nightly matches the cookie-free local success track 2026.08.30.232658
+ARG YTDLP_TRACK=nightly
+RUN if [ "$YTDLP_TRACK" = "nightly" ]; then \
+        pip install --no-cache-dir --upgrade --pre "yt-dlp[default]" \
+        || pip install --no-cache-dir --upgrade "yt-dlp[default]"; \
+    fi
 
 EXPOSE 8000
 
