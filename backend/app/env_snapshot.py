@@ -50,12 +50,16 @@ def _command_version(binary: str) -> str:
         return "unknown"
 
 
-def _deploy_version() -> str:
+def deploy_version() -> str:
     for key in ("RENDER_GIT_COMMIT", "GITHUB_SHA", "SOURCE_VERSION", "GIT_COMMIT"):
         value = (os.getenv(key) or "").strip()
         if value:
             return value[:40]
     return "unknown"
+
+
+def _deploy_version() -> str:
+    return deploy_version()
 
 
 def _int_env(name: str, default: int) -> int:
@@ -98,7 +102,7 @@ def capture_snapshot() -> dict[str, Any]:
         "settings": {
             "max_concurrent_downloads": limiter.max_active,
             "max_download_queue": limiter.max_queue,
-            "max_job_attempts": _int_env("MAX_JOB_ATTEMPTS", 4),
+            "max_job_attempts": _int_env("MAX_JOB_ATTEMPTS", 6),
             "max_rate_limit_waits": _int_env("MAX_RATE_LIMIT_WAITS", 2),
             "max_route_switches": _int_env("MAX_ROUTE_SWITCHES", 1),
             "job_timeout_seconds": _int_env("JOB_TIMEOUT_SECONDS", 720),

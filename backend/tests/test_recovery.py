@@ -72,6 +72,76 @@ class RecoveryTestCase(unittest.TestCase):
         self.assertEqual(login.code, "LOGIN_REQUIRED")
         self.assertNotEqual(bot.code, forbidden.code)
 
+    def test_bot_check_retries_client_before_fail(self) -> None:
+        retry = decide_next(
+            "BOT_CHECK",
+            stage="extract",
+            attempts=1,
+            max_attempts=6,
+            waits_used=0,
+            max_waits=2,
+            route_switches=0,
+            max_route_switches=1,
+            has_next_client=True,
+            has_next_route=False,
+            can_use_cookies=False,
+        )
+        self.assertEqual(retry.action, "retry_client")
+        self.assertEqual(retry.cool_seconds, 0)
+        exhausted = decide_next(
+            "BOT_CHECK",
+            stage="extract",
+            attempts=3,
+            max_attempts=6,
+            waits_used=0,
+            max_waits=2,
+            route_switches=0,
+            max_route_switches=1,
+            has_next_client=False,
+            has_next_route=False,
+            can_use_cookies=False,
+        )
+        self.assertEqual(exhausted.action, "fail")
+        self.assertEqual(exhausted.cool_seconds, 600)
+
+    def test_bot_check_retries_next_client_and_does_not_cool(self) -> None:
+        from app.routes import is_cooled
+        from app.ytdlp_engine import run_download
+
+        calls: list[str] = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+                youtube = (opts.get("extractor_args") or {}).get("youtube") or {}
+                self.clients = youtube.get("player_client")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                label = ",".join(self.clients) if self.clients else "default"
+                calls.append(label)
+                if self.clients is None:
+                    raise RuntimeError("Sign in to confirm you’re not a bot")
+                return {"title": "ok", "is_live": False}
+
+            def process_ie_result(self, info, download=True):
+                job_dir = Path(self.opts["outtmpl"]).parent
+                (job_dir / "ok.mp4").write_bytes(b"data")
+
+        store.create("job-bot", "video", "1080p")
+        with patch("app.ytdlp_engine.YoutubeDL", FakeYDL), patch("app.ytdlp_engine.pot_ready", return_value=False):
+            run_download("job-bot", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "video", "1080p")
+        job = store.get("job-bot")
+        self.assertEqual(job.status, "done")
+        self.assertIn("default", calls)
+        self.assertTrue(any(item != "default" for item in calls))
+        self.assertFalse(is_cooled("direct"))
+
     def test_pot_failure_differs_from_js_runtime(self) -> None:
         pot = classify_error(RuntimeError("PO Token provider failed to supply a token"))
         missing = classify_error(RuntimeError("A PO Token is required for this client"))

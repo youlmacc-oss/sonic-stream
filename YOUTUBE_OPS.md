@@ -43,7 +43,7 @@ YTDLP_TRACK=nightly
 | 코드 | 의미 | 서버만으로 복구? |
 | :--- | :--- | :--- |
 | `RATE_LIMITED` | 429 / Too Many Requests | 대기·상한 후 재시도. IP 차단이 확정된 것은 아님 |
-| `BOT_CHECK` | 자동 요청 확인 요구 | 쿠키 또는 다른 경로. IP 차단과 동일하지 않음 |
+| `BOT_CHECK` | 자동 요청 확인 요구 | 다음 클라이언트(`web_safari`/`android_vr`/`web_embedded`)를 먼저 시도. 그다음 쿠키 또는 다른 경로. 클라이언트 재시도 중에는 경로를 식히지 않음. IP 차단과 동일하지 않음 |
 | `LOGIN_REQUIRED` | 로그인 필요 | 유효한 쿠키가 있을 때만 재시도 |
 | `COOKIE_INVALID` | 쿠키 형식/거절 | 쿠키 갱신. 파일 존재만으로 유효하지 않음 |
 | `POT_MISSING` / `POT_FAILED` | 토큰 공급 문제 | 공급자 가동. IP 차단 해제가 아님 |
@@ -86,7 +86,7 @@ ADMIN_TOKEN=change-me
 ### 기본 경로
 
 - 인증서 검증을 켭니다. `nocheckcertificate`를 기본 해결책으로 쓰지 않습니다.
-- yt-dlp 기본 클라이언트를 먼저 씁니다. 다음 후보는 현재 버전에서 확인된 `web_safari`, POT가 준비되면 `mweb`입니다.
+- yt-dlp 기본 클라이언트를 먼저 씁니다. POT가 없으면 `web_safari` → `android_vr` → `web_embedded`를 이어서 시도합니다. POT가 준비되면 `mweb`도 넣습니다.
 - `YOUTUBE_COOKIE_MODE=anonymous_first`이면 공개 영상에 로그인 쿠키를 먼저 붙이지 않습니다.
 
 ### 쿠키

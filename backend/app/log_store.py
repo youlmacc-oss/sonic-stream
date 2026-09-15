@@ -18,6 +18,8 @@ DEFAULT_MAX_BYTES = 5_000_000
 DEFAULT_RETAIN_DAYS = 14
 DEFAULT_MAX_TOTAL = 50_000_000
 FLUSH_JOIN_SECONDS = 5.0
+CRITICAL_EVENTS = {"failed", "cancelled", "succeeded"}
+EMERGENCY_LIMIT_FACTOR = 5
 
 
 def default_log_dir() -> Path:
@@ -64,13 +66,44 @@ class EventStore:
     def stop(self, timeout: float = FLUSH_JOIN_SECONDS) -> None:
         self._stop.set()
         try:
-            self._queue.put_nowait(None)
-        except Full:
-            pass
+            self._queue.put(None, timeout=min(1.0, timeout))
+        except (Full, Exception):
+            try:
+                self._queue.put_nowait(None)
+            except (Full, Exception):
+                pass
         if self._writer is not None:
             self._writer.join(timeout=timeout)
+        leftover: list[dict[str, Any]] = []
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except Empty:
+                break
+            if item is not None:
+                leftover.append(item)
+        for item in leftover:
+            try:
+                self._append(item)
+            except Exception as exc:
+                self.write_failures += 1
+                self.last_write_error = type(exc).__name__
 
-    def emit(self, record: dict[str, Any]) -> bool:
+    def emit(self, record: dict[str, Any], *, urgent: bool = False) -> bool:
+        event = str(record.get("event") or "")
+        if urgent or event in CRITICAL_EVENTS:
+            try:
+                self._append(record)
+                return True
+            except Exception as exc:
+                self.write_failures += 1
+                self.last_write_error = type(exc).__name__
+                try:
+                    self._queue.put_nowait(record)
+                    return True
+                except Full:
+                    self.dropped += 1
+                    return False
         try:
             self._queue.put_nowait(record)
             return True
@@ -105,6 +138,10 @@ class EventStore:
             with self.current_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
                 handle.flush()
+                try:
+                    os.fsync(handle.fileno())
+                except OSError:
+                    pass
             self._maybe_rotate_locked()
             self._enforce_limits_locked()
 
@@ -143,6 +180,35 @@ class EventStore:
             self.last_write_error = type(exc).__name__
         return None
 
+    def _backup_configured(self) -> bool:
+        return bool((os.getenv("LOG_BACKUP_DIR") or "").strip())
+
+    def _backed_up_keys(self) -> set[str]:
+        index = self.directory / "backup_index.json"
+        if not index.exists():
+            return set()
+        try:
+            data = json.loads(index.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        copied = data.get("copied") if isinstance(data, dict) else None
+        if not isinstance(copied, dict):
+            return set()
+        return {str(key) for key in copied}
+
+    def _may_delete_archive(self, path: Path, *, emergency: bool) -> bool:
+        if path.resolve() == self.current_path.resolve():
+            return False
+        if not self._backup_configured():
+            return True
+        try:
+            key = str(path.resolve())
+        except OSError:
+            return emergency
+        if key in self._backed_up_keys():
+            return True
+        return emergency
+
     def _enforce_limits_locked(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retain_days)
         archives = self.archive_files()
@@ -151,7 +217,7 @@ class EventStore:
                 mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
             except OSError:
                 continue
-            if mtime < cutoff:
+            if mtime < cutoff and self._may_delete_archive(path, emergency=False):
                 try:
                     path.unlink()
                 except OSError:
@@ -171,8 +237,14 @@ class EventStore:
             except OSError:
                 continue
         sized.sort()
+        emergency_bytes = self.max_total_bytes * EMERGENCY_LIMIT_FACTOR
         while total > self.max_total_bytes and sized:
-            _, size, path = sized.pop(0)
+            _, size, path = sized[0]
+            emergency = total > emergency_bytes
+            if not self._may_delete_archive(path, emergency=emergency):
+                sized.pop(0)
+                continue
+            sized.pop(0)
             try:
                 path.unlink()
                 total -= size

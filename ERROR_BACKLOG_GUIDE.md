@@ -49,7 +49,7 @@ LOG_BACKUP_DIR=C:\sonic-stream-log-backup
 
 `GET /api/debug/status`
 
-`backup.enabled`, `pending`, `last_success_at`, `last_failure`를 봅니다. 토큰이 없으면 진단 API는 404입니다. 공개 `/health`는 `{"status":"ok"}`만 줍니다.
+`backup.enabled`, `pending`, `last_success_at`, `last_failure`를 봅니다. 토큰이 없으면 진단 API는 404입니다. 공개 `/health`와 `/version`은 YouTube를 호출하지 않고 `commit`과 API 경로로 배포 커밋을 확인합니다. 용량 한도 삭제는 백업이 켜져 있으면 복사 완료된 회전본만 지웁니다. 실패/성공/취소 이벤트는 큐가 가득 차도 현재 파일에 바로 씁니다.
 
 ## 진단 묶음 만들기
 

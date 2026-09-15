@@ -1,0 +1,17 @@
+# Existing Render web service is sonic-stream-zc61.
+# Apply this Blueprint from the repo or set the dashboard to match:
+# branch=main, auto-deploy on, Docker, Dockerfile path ./Dockerfile, context ., health /health.
+services:
+  - type: web
+    name: sonic-stream-zc61
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"

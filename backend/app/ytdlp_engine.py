@@ -96,8 +96,13 @@ def download_client_attempts(*, use_cookies: bool, pot_ok: bool) -> list[list[st
     attempts: list[list[str] | None] = [None]
     if pot_ok:
         attempts.append(["mweb"])
-    else:
         attempts.append(["web_safari"])
+        attempts.append(["android_vr"])
+    else:
+        # No-POT clients first after default. Datacenter IPs often fail default with BOT_CHECK.
+        attempts.append(["web_safari"])
+        attempts.append(["android_vr"])
+        attempts.append(["web_embedded"])
     if use_cookies:
         attempts.append(["web"])
     unique: list[list[str] | None] = []
@@ -114,7 +119,7 @@ def download_client_attempts(*, use_cookies: bool, pot_ok: bool) -> list[list[st
 
 
 def inspect_client_attempts() -> list[list[str] | None]:
-    return [None, ["web_safari"]]
+    return [None, ["web_safari"], ["android_vr"]]
 
 
 def apply_ip_mode(opts: dict[str, Any]) -> dict[str, Any]:
@@ -576,7 +581,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
         attempts = 0
         waits_used = 0
         route_switches = 0
-        max_attempts = _int_env("MAX_JOB_ATTEMPTS", 4)
+        max_attempts = _int_env("MAX_JOB_ATTEMPTS", 6)
         max_waits = _int_env("MAX_RATE_LIMIT_WAITS", 2)
         max_route_switches = _int_env("MAX_ROUTE_SWITCHES", 1)
         deadline = time.time() + _int_env("JOB_TIMEOUT_SECONDS", 720)
@@ -756,7 +761,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     can_use_cookies=can_use_cookies,
                     retry_after=retry_after,
                 )
-                if decision.cool_seconds:
+                if decision.cool_seconds and decision.action in {"fail", "switch_route"}:
                     cool_route(route.alias, decision.cool_seconds)
 
                 if decision.action == "fail":

@@ -16,7 +16,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.background import BackgroundTask
 
 from app.bundle import build_bundle, bundle_json_bytes, bundle_zip_bytes
-from app.env_snapshot import capture_snapshot, snapshot_id
+from app.env_snapshot import capture_snapshot, current_snapshot, deploy_version, snapshot_id
 from app.errors import MESSAGES, raise_api_error
 from app.eventlog import emit_event
 from app.gc import cleanup_job, delete_job_dir, sweep_expired
@@ -475,4 +475,26 @@ async def debug_status(request: Request) -> dict[str, object]:
 
 @app.get("/health")
 async def health() -> dict[str, object]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "sonicstream",
+        "commit": deploy_version(),
+    }
+
+
+@app.get("/version")
+async def version() -> dict[str, object]:
+    paths = sorted(
+        {
+            getattr(route, "path", "")
+            for route in app.routes
+            if getattr(route, "path", "").startswith("/")
+        }
+    )
+    snapshot = current_snapshot()
+    return {
+        "service": "sonicstream",
+        "commit": deploy_version(),
+        "yt_dlp": snapshot.get("yt_dlp"),
+        "paths": [path for path in paths if path.startswith("/api") or path in {"/health", "/version"}],
+    }

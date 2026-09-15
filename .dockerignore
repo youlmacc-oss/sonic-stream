@@ -1,0 +1,15 @@
+.git
+.github
+frontend
+**/.venv
+**/__pycache__
+**/.next
+**/node_modules
+**/*.md
+backend/logs/*.jsonl
+backend/logs/*.jsonl.gz
+backend/logs/*.log
+backend/.env
+backend/.env.*
+**/.pytest_cache
+**/.mypy_cache

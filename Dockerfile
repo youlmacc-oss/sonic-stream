@@ -20,7 +20,7 @@ ENV DENO_INSTALL=/usr/local \
     PATH="/usr/local/bin:${PATH}" \
     GIT_COMMIT=${RENDER_GIT_COMMIT}
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
 # stable = requirements pin. nightly = verified local track 2026.08.30.232658
 ARG YTDLP_TRACK=stable
@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
         pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"; \
     fi
 
-COPY . .
+COPY backend/ .
 
 EXPOSE 8000
 

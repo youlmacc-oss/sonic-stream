@@ -87,7 +87,7 @@ def emit_event(
             "snapshot_id": snapshot_id(),
             "extra": mask_value(extra or {}),
         }
-        get_store().emit(record)
+        get_store().emit(record, urgent=event in {"failed", "cancelled", "succeeded"})
         return record
     except Exception:
         return None

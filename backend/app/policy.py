@@ -55,6 +55,8 @@ def decide_next(
     if code == "BOT_CHECK":
         if can_use_cookies:
             return AttemptDecision("use_cookies")
+        if has_next_client:
+            return AttemptDecision("retry_client")
         if has_next_route and route_switches < max_route_switches:
             return AttemptDecision("switch_route", cool_seconds=600)
         return AttemptDecision("fail", cool_seconds=600)

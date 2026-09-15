@@ -7,10 +7,12 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from queue import Queue
 from unittest.mock import patch
 
 from app.bundle import build_bundle
 from app.diagnostics import mask_value, sanitize_url
+from app.env_snapshot import deploy_version
 from app.eventlog import emit_event
 from app.log_backup import LogBackup
 from app.log_store import EventStore, reset_store
@@ -249,6 +251,44 @@ class EventLogTests(unittest.TestCase):
                 require_admin(_Req())
             self.assertEqual(denied.exception.status_code, 401)
             require_admin(_Req("secret-token"))
+
+    def test_critical_event_writes_when_queue_full(self) -> None:
+        blocked = EventStore(self.dir / "urgent")
+        blocked.queue_size = 1
+        blocked._queue = Queue(maxsize=1)
+        blocked._queue.put_nowait({"event": "started", "job_id": "filler"})
+        ok = blocked.emit({"schema_version": 2, "event": "failed", "job_id": "crit", "error_code": "BOT_CHECK"})
+        self.assertTrue(ok)
+        records, _ = blocked.read_records(job_id="crit")
+        self.assertEqual(records[0]["error_code"], "BOT_CHECK")
+        self.assertEqual(blocked.dropped, 0)
+
+    def test_unbacked_archives_kept_when_backup_configured(self) -> None:
+        archive = self.dir / "events-20260103T000000Z.jsonl"
+        archive.write_text(
+            '{"schema_version":2,"event":"failed","job_id":"keep-me","error_code":"BOT_CHECK"}\n',
+            encoding="utf-8",
+        )
+        old = time.time() - 20 * 24 * 3600
+        os.utime(archive, (old, old))
+        self.store.retain_days = 1
+        with patch.dict(os.environ, {"LOG_BACKUP_DIR": str(self.dir / "bk")}):
+            self.store._lock.acquire()
+            try:
+                self.store._enforce_limits_locked()
+            finally:
+                self.store._lock.release()
+        self.assertTrue(archive.exists())
+        self.store._lock.acquire()
+        try:
+            self.store._enforce_limits_locked()
+        finally:
+            self.store._lock.release()
+        self.assertFalse(archive.exists())
+
+    def test_deploy_version_reads_render_commit(self) -> None:
+        with patch.dict(os.environ, {"RENDER_GIT_COMMIT": "480d9c64dce08700770df592806af2afff7d50ad"}, clear=False):
+            self.assertEqual(deploy_version(), "480d9c64dce08700770df592806af2afff7d50ad")
 
     def test_log_strings_are_not_executed(self) -> None:
         evil = "https://example.com/; rm -rf /; ../../etc/passwd"
