@@ -11,7 +11,12 @@ RUN apt-get update \
         ffmpeg \
         ca-certificates \
         curl \
+        unzip \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
     && rm -rf /var/lib/apt/lists/*
+
+ENV DENO_INSTALL=/usr/local \
+    PATH="/usr/local/bin:${PATH}"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

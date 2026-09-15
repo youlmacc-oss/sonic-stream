@@ -54,6 +54,11 @@ INSPECT_CLIENT_ATTEMPTS: tuple[list[str] | None, ...] = (
     ["tv", "web_safari"],
     ["tv_embedded", "ios", "mweb"],
 )
+DOWNLOAD_CLIENT_ATTEMPTS: tuple[list[str] | None, ...] = (
+    None,
+    ["web_safari", "ios"],
+    ["android", "web"],
+)
 YOUTUBE_ID_RE = re.compile(
     r"(?:youtube\.com/(?:watch\?.*?v=|embed/|shorts/|live/|music/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})",
@@ -73,6 +78,8 @@ def base_ydl_opts(**extra: Any) -> dict[str, Any]:
         "geo_bypass": True,
         "user_agent": CHROME_UA,
         "http_headers": BROWSER_HEADERS,
+        "js_runtimes": {"deno": {}, "node": {}},
+        "remote_components": ["ejs:github"],
     }
     if clients:
         opts["extractor_args"] = {"youtube": {"player_client": list(clients)}}
@@ -285,7 +292,13 @@ def make_progress_hook(job_id: str):
     return hook
 
 
-def build_ydl_opts(job_id: str, media_type: MediaType, quality: MediaQuality, job_dir: Path) -> dict[str, Any]:
+def build_ydl_opts(
+    job_id: str,
+    media_type: MediaType,
+    quality: MediaQuality,
+    job_dir: Path,
+    player_clients: list[str] | None = None,
+) -> dict[str, Any]:
     outtmpl = str(job_dir / "%(title)s.%(ext)s")
     opts = base_ydl_opts(
         windowsfilenames=True,
@@ -294,6 +307,7 @@ def build_ydl_opts(job_id: str, media_type: MediaType, quality: MediaQuality, jo
         ignoreerrors=False,
         progress_hooks=[make_progress_hook(job_id)],
         outtmpl=outtmpl,
+        player_clients=player_clients,
     )
     ffmpeg_dir = resolve_ffmpeg_dir()
     if ffmpeg_dir is not None:
@@ -445,13 +459,28 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
     store.update(job_id, status="downloading", percent=0.0, speed="0 KB/s")
 
     try:
-        cleaned = validate_url(url)
-        opts = build_ydl_opts(job_id, media_type, quality, job_dir)
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(cleaned, download=False) or {}
-            if is_live(info):
-                raise RuntimeError("LIVE_STREAM")
-            ydl.process_ie_result(info, download=True)
+        cleaned = canonicalize_media_url(validate_url(url))
+        last_error: Exception | None = None
+        for clients in DOWNLOAD_CLIENT_ATTEMPTS:
+            try:
+                opts = build_ydl_opts(job_id, media_type, quality, job_dir, player_clients=clients)
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(cleaned, download=False) or {}
+                    if is_live(info):
+                        raise RuntimeError("LIVE_STREAM")
+                    ydl.process_ie_result(info, download=True)
+                last_error = None
+                break
+            except RuntimeError as exc:
+                if str(exc) == "LIVE_STREAM":
+                    raise
+                last_error = exc
+                logger.warning("Download attempt failed (%s): %s", clients or "default", exc)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Download attempt failed (%s): %s", clients or "default", exc)
+        if last_error is not None:
+            raise last_error
 
         output = find_media_file(job_dir)
         if output is None:

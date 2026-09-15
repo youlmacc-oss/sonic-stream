@@ -10,6 +10,7 @@ MESSAGES: dict[str, str] = {
     "NOT_FOUND": "영상을 찾을 수 없습니다.",
     "GEO_RESTRICTED": "이 영상은 지역 제한으로 받을 수 없습니다.",
     "RATE_LIMITED": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+    "BOT_CHECK": "YouTube가 요청을 차단했습니다. 잠시 후 다시 시도해 주세요.",
     "LIVE_STREAM": "라이브 스트림은 지원하지 않습니다.",
     "AGE_RESTRICTED": "연령 제한 영상은 받을 수 없습니다.",
     "NETWORK_ERROR": "네트워크 연결이 끊겼습니다. 다시 시도해 주세요.",
@@ -26,6 +27,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "NOT_FOUND": 404,
     "GEO_RESTRICTED": 403,
     "RATE_LIMITED": 429,
+    "BOT_CHECK": 403,
     "LIVE_STREAM": 400,
     "AGE_RESTRICTED": 403,
     "NETWORK_ERROR": 503,
@@ -81,13 +83,14 @@ def classify_ytdlp_error(exc: BaseException) -> tuple[str, str]:
     ):
         return "NETWORK_ERROR", MESSAGES["NETWORK_ERROR"]
     if (
-        "429" in text
-        or "too many requests" in text
-        or "sign in to confirm" in text
+        "sign in to confirm" in text
         or "confirm you’re not a bot" in text
         or "confirm you're not a bot" in text
-        or "bot" in text and "detected" in text
+        or "login_required" in text
+        or ("bot" in text and "detected" in text)
     ):
+        return "BOT_CHECK", MESSAGES["BOT_CHECK"]
+    if "429" in text or "too many requests" in text:
         return "RATE_LIMITED", MESSAGES["RATE_LIMITED"]
     if (
         "not available in your country" in text
