@@ -231,7 +231,7 @@ export default function Home() {
       </TiltCard>
 
       {inspecting && (
-        <p className="relative z-10 w-full max-w-xl text-xs text-cyan-400/80 mb-4 px-1">최적 고화질 스트림 분석 중...</p>
+        <p className="relative z-10 w-full max-w-xl text-xs text-cyan-400/80 mb-4 px-1">영상 미리보기를 불러오는 중...</p>
       )}
       {inspectError && !inspecting && (
         <p className="relative z-10 w-full max-w-xl text-xs text-rose-400 mb-4 px-1">{inspectError}</p>

@@ -7,6 +7,8 @@ const BASE_TITLE = 'SonicStream';
 export type TabProgressStatus =
   | 'idle'
   | 'inspecting'
+  | 'queued'
+  | 'retrying'
   | 'downloading'
   | 'processing'
   | 'completed'
@@ -75,6 +77,13 @@ export function useTabProgress(status: TabProgressStatus, percent: number) {
     if (restoreTimer.current) {
       window.clearTimeout(restoreTimer.current);
       restoreTimer.current = null;
+    }
+
+    if (status === 'queued' || status === 'retrying') {
+      document.title = status === 'queued'
+        ? '대기 중... | SonicStream'
+        : '재시도 대기 중... | SonicStream';
+      return;
     }
 
     if (status === 'downloading' || status === 'processing') {

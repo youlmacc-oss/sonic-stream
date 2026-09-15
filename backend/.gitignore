@@ -4,3 +4,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+logs/*.jsonl
+logs/*.jsonl.gz
+logs/*.log
+logs/backup_index.json

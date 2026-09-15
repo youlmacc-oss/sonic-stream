@@ -19,11 +19,17 @@ ENV DENO_INSTALL=/usr/local \
     PATH="/usr/local/bin:${PATH}"
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# stable = requirements pin. nightly = verified local track 2026.08.30.232658
+ARG YTDLP_TRACK=stable
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$YTDLP_TRACK" = "nightly" ]; then \
+        pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"; \
+    fi
 
 COPY . .
-RUN pip install --no-cache-dir --upgrade --pre "yt-dlp[default]"
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Single process: JobStore and limiter are in-memory and not shared.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -8,6 +8,7 @@ export interface MediaInfo {
   author: string;
   duration: string;
   thumbnail: string;
+  preview_only?: boolean;
 }
 
 export function resolveDownloadUrl(downloadUrl: string): string {

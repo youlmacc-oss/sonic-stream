@@ -18,6 +18,8 @@ import { playErrorBeep, playSuccessChime, unlockAudio } from '@/utils/sound';
 type ButtonStatus =
   | 'idle'
   | 'inspecting'
+  | 'queued'
+  | 'retrying'
   | 'downloading'
   | 'processing'
   | 'completed'
@@ -72,7 +74,10 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
   const buttonRef = useRef<HTMLDivElement>(null);
   const celebratedRef = useRef(false);
   const onCompletedRef = useRef(onCompleted);
-  onCompletedRef.current = onCompleted;
+
+  useEffect(() => {
+    onCompletedRef.current = onCompleted;
+  }, [onCompleted]);
 
   useTabProgress(status, progress);
 
@@ -131,6 +136,18 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
     settledRef.current = false;
     const source = new EventSource(`${API_BASE}/api/progress/${jobId}`);
     eventSourceRef.current = source;
+
+    source.addEventListener('queued', (event) => {
+      const data = parseEventData(event.data);
+      setStatus('queued');
+      setDetail(data?.detail || '대기열에서 순서를 기다리는 중...');
+    });
+
+    source.addEventListener('retrying', (event) => {
+      const data = parseEventData(event.data);
+      setStatus('retrying');
+      setDetail(data?.detail || '연결 재시도 중...');
+    });
 
     source.addEventListener('progress', (event) => {
       const data = parseEventData(event.data);
@@ -219,7 +236,7 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
         resetIdleSoon();
         return;
       }
-      setStatus('downloading');
+      setStatus('queued');
       subscribe(payload.job_id);
     } catch {
       setStatus('error');
@@ -228,7 +245,7 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
     }
   };
 
-  const busy = status === 'inspecting' || status === 'downloading' || status === 'processing';
+  const busy = status === 'inspecting' || status === 'queued' || status === 'retrying' || status === 'downloading' || status === 'processing';
   const gaugeVisible = status === 'downloading' || status === 'processing';
   const gaugeWidth = status === 'processing' ? 95 : Math.min(progress, 100);
   const canClick = status === 'idle' || status === 'error';
@@ -302,7 +319,32 @@ export default function DownloadButton({ url, format, quality, onCompleted }: Do
                 className="flex items-center justify-center w-full gap-2 text-cyan-400 text-xs"
               >
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>최적 고화질 스트림 분석 중...</span>
+                <span>다운로드를 준비하는 중...</span>
+              </motion.div>
+            )}
+
+            {status === 'queued' && (
+              <motion.div
+                key="queued"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex items-center justify-center w-full gap-2 text-cyan-400 text-xs"
+              >
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>{detail || '대기열에서 순서를 기다리는 중...'}</span>
+              </motion.div>
+            )}
+
+            {status === 'retrying' && (
+              <motion.div
+                key="retrying"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex items-center justify-center w-full gap-2 text-amber-300 text-xs"
+              >
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="truncate">{detail || '연결 재시도 중...'}</span>
               </motion.div>
             )}
 

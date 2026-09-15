@@ -37,6 +37,11 @@ export default function MediaCard({ media }: MediaCardProps) {
               <Clock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
               <span>재생 시간: {media.duration}</span>
             </div>
+            {media.preview_only && (
+              <p className="text-[11px] text-zinc-500 mt-1">
+                미리보기입니다. 제목·썸네일 조회 성공은 다운로드 가능을 의미하지 않습니다.
+              </p>
+            )}
           </div>
         </div>
       </div>

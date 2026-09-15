@@ -18,6 +18,12 @@ frontend/build/
 .env.local
 .env.*.local
 
+# Runtime error backlog
+backend/logs/*.jsonl
+backend/logs/*.jsonl.gz
+backend/logs/*.log
+backend/logs/backup_index.json
+
 # OS / IDE
 .DS_Store
 Thumbs.db

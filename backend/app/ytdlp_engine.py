@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -13,12 +15,20 @@ from typing import Any
 from urllib.parse import quote
 
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadCancelled
 
-from app.errors import MESSAGES, classify_ytdlp_error
+from app.classify import classify_error
+from app.diagnostics import diagnostic_record, mask_text
+from app.errors import MESSAGES
 from app.gc import delete_job_dir, job_dir_for
 from app.jobs import store
 from app.models import InspectResponse, MediaQuality, MediaType
-from app.youtube_auth import apply_youtube_auth, has_cookies
+from app.policy import decide_next
+from app.pot import apply_pot, pot_ready
+from app.routes import available_routes, configured_routes, cool_route, next_route, recover_route
+from app.runtime import ejs_package_present, enabled_js_runtimes
+from app.eventlog import emit_event
+from app.youtube_auth import apply_youtube_auth, cookie_state, has_cookies
 
 logger = logging.getLogger("sonicstream.ytdlp")
 
@@ -26,79 +36,39 @@ URL_RE = re.compile(r"^https?://[^\s/$.?#].[^\s]*$", re.IGNORECASE)
 UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 SKIP_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".part", ".ytdl", ".json", ".srt", ".vtt"}
 MEDIA_EXTS = {".mp4", ".mp3", ".flac", ".m4a", ".webm", ".mkv", ".mov"}
-
-CHROME_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/141.0.7390.122 Safari/537.36"
-)
-
-BROWSER_HEADERS = {
-    "User-Agent": CHROME_UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Sec-Ch-Ua": '"Google Chrome";v="141", "Chromium";v="141", "Not A(Brand";v="24"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-
-# Try yt-dlp defaults first, then known working client sets.
-# Forcing only android/web was breaking Render (PO token / SABR).
-INSPECT_CLIENT_ATTEMPTS: tuple[list[str] | None, ...] = (
-    None,
-    ["android", "web"],
-    ["tv", "web_safari"],
-    ["tv_embedded", "ios", "mweb"],
-)
-DOWNLOAD_CLIENT_ATTEMPTS: tuple[list[str] | None, ...] = (
-    None,
-    ["web_safari", "ios"],
-    ["android", "web"],
-)
 YOUTUBE_ID_RE = re.compile(
     r"(?:youtube\.com/(?:watch\?.*?v=|embed/|shorts/|live/|music/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})",
     re.IGNORECASE,
 )
 
-
-def base_ydl_opts(**extra: Any) -> dict[str, Any]:
-    clients = extra.pop("player_clients", None)
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "socket_timeout": 25,
-        "retries": 2,
-        "geo_bypass": True,
-        "user_agent": CHROME_UA,
-        "http_headers": BROWSER_HEADERS,
-        "js_runtimes": {"deno": {}, "node": {}},
-        "remote_components": ["ejs:github"],
-    }
-    if clients:
-        youtube_args = opts.setdefault("extractor_args", {}).setdefault("youtube", {})
-        youtube_args["player_client"] = list(clients)
-    opts.update(extra)
-    return apply_youtube_auth(opts)
+# Verified against yt-dlp 2026.08.30 INNERTUBE_CLIENTS. Do not add retired names.
+KNOWN_CLIENTS = {
+    "android",
+    "android_vr",
+    "ios",
+    "mweb",
+    "tv",
+    "tv_downgraded",
+    "tv_simply",
+    "visionos",
+    "web",
+    "web_creator",
+    "web_embedded",
+    "web_music",
+    "web_safari",
+}
 
 
-def inspect_client_attempts() -> tuple[list[str] | None, ...]:
-    if has_cookies():
-        return (None, ["web_safari", "ios"], ["web"])
-    return INSPECT_CLIENT_ATTEMPTS
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
 
 
-def download_client_attempts() -> tuple[list[str] | None, ...]:
-    if has_cookies():
-        return (None, ["web_safari", "ios"], ["web"])
-    return DOWNLOAD_CLIENT_ATTEMPTS
+def _cookie_mode() -> str:
+    return (os.getenv("YOUTUBE_COOKIE_MODE") or "anonymous_first").strip().lower()
 
 
 def canonicalize_media_url(url: str) -> str:
@@ -120,6 +90,74 @@ def validate_combo(media_type: MediaType, quality: MediaQuality) -> None:
     audio_ok = media_type == "audio" and quality in {"320k", "flac"}
     if not (video_ok or audio_ok):
         raise ValueError("PROCESS_FAILED")
+
+
+def download_client_attempts(*, use_cookies: bool, pot_ok: bool) -> list[list[str] | None]:
+    attempts: list[list[str] | None] = [None]
+    if pot_ok:
+        attempts.append(["mweb"])
+    else:
+        attempts.append(["web_safari"])
+    if use_cookies:
+        attempts.append(["web"])
+    unique: list[list[str] | None] = []
+    seen: set[tuple[str, ...]] = set()
+    for item in attempts:
+        key = tuple(item) if item else ("__default__",)
+        if key in seen:
+            continue
+        if item and any(client not in KNOWN_CLIENTS for client in item):
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def inspect_client_attempts() -> list[list[str] | None]:
+    return [None, ["web_safari"]]
+
+
+def apply_ip_mode(opts: dict[str, Any]) -> dict[str, Any]:
+    mode = (os.getenv("YOUTUBE_IP_MODE") or "").strip().lower()
+    if mode == "ipv4":
+        opts["source_address"] = "0.0.0.0"
+    elif mode == "ipv6":
+        opts["source_address"] = "::"
+    return opts
+
+
+def base_ydl_opts(
+    *,
+    player_clients: list[str] | None = None,
+    proxy: str | None = None,
+    use_cookies: bool = False,
+    **extra: Any,
+) -> dict[str, Any]:
+    extra.pop("player_clients", None)
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 25,
+        "retries": 1,
+        "fragment_retries": 1,
+        "extractor_retries": 1,
+        "geo_bypass": True,
+    }
+    runtimes = enabled_js_runtimes()
+    if runtimes:
+        opts["js_runtimes"] = runtimes
+    if not ejs_package_present():
+        opts["remote_components"] = ["ejs:github"]
+    if player_clients:
+        youtube_args = opts.setdefault("extractor_args", {}).setdefault("youtube", {})
+        youtube_args["player_client"] = list(player_clients)
+    apply_ip_mode(opts)
+    if pot_ready():
+        apply_pot(opts)
+    apply_youtube_auth(opts, proxy=proxy, use_cookies=use_cookies)
+    opts.update(extra)
+    return opts
 
 
 def format_duration(seconds: object) -> str:
@@ -176,7 +214,8 @@ def metadata_thin(info: dict[str, Any] | None) -> bool:
 
 
 def inspect_via_ytdlp(url: str, clients: list[str] | None) -> dict[str, Any]:
-    opts = base_ydl_opts(skip_download=True, player_clients=clients)
+    use_cookies = _cookie_mode() == "always" and has_cookies()
+    opts = base_ydl_opts(skip_download=True, player_clients=clients, use_cookies=use_cookies)
     with YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False) or {}
 
@@ -186,8 +225,8 @@ def inspect_via_oembed(url: str) -> tuple[InspectResponse | None, bool]:
         f"https://www.youtube.com/oembed?format=json&url={quote(url, safe='')}",
         f"https://noembed.com/embed?url={quote(url, safe='')}",
     )
-    request_headers = {"User-Agent": CHROME_UA, "Accept": "application/json"}
-    not_found = False
+    request_headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    saw_404 = False
     for endpoint in endpoints:
         try:
             request = urllib.request.Request(endpoint, headers=request_headers)
@@ -195,7 +234,7 @@ def inspect_via_oembed(url: str) -> tuple[InspectResponse | None, bool]:
                 data = json.loads(response.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                not_found = True
+                saw_404 = True
             continue
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
             continue
@@ -209,8 +248,9 @@ def inspect_via_oembed(url: str) -> tuple[InspectResponse | None, bool]:
             author=str(data.get("author_name") or data.get("author") or "Unknown"),
             duration="00:00",
             thumbnail=str(data.get("thumbnail_url") or ""),
+            preview_only=True,
         ), False
-    return None, not_found
+    return None, saw_404
 
 
 def inspect_to_response(info: dict[str, Any]) -> InspectResponse:
@@ -218,12 +258,13 @@ def inspect_to_response(info: dict[str, Any]) -> InspectResponse:
         raise RuntimeError(f"LIVE_STREAM|{MESSAGES['LIVE_STREAM']}")
     title = str(info.get("title") or info.get("fulltitle") or "").strip()
     if not title:
-        raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
+        raise RuntimeError(f"EXTRACT_FAILED|{MESSAGES['EXTRACT_FAILED']}")
     return InspectResponse(
         title=title,
         author=pick_author(info),
         duration=format_duration(info.get("duration")),
         thumbnail=pick_thumbnail(info),
+        preview_only=False,
     )
 
 
@@ -231,13 +272,13 @@ def inspect_url(url: str) -> InspectResponse:
     cleaned = canonicalize_media_url(validate_url(url))
     last_error: Exception | None = None
     is_youtube = YOUTUBE_ID_RE.search(cleaned) is not None
+    oembed_preview: InspectResponse | None = None
+    oembed_404 = False
 
     if is_youtube:
-        fallback, oembed_missing = inspect_via_oembed(cleaned)
-        if fallback is not None:
-            return fallback
-        if oembed_missing:
-            raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
+        oembed_preview, oembed_404 = inspect_via_oembed(cleaned)
+        if oembed_preview is not None:
+            return oembed_preview
 
     for clients in inspect_client_attempts():
         try:
@@ -248,17 +289,20 @@ def inspect_url(url: str) -> InspectResponse:
         except Exception as exc:
             last_error = exc
             label = ",".join(clients) if clients else "default"
-            logger.warning("yt-dlp inspect failed (%s) for %s: %s", label, cleaned, exc)
+            logger.warning("yt-dlp inspect failed (%s): %s", label, mask_text(str(exc)))
 
-    fallback, oembed_missing = inspect_via_oembed(cleaned)
-    if fallback is not None:
-        logger.info("Inspect recovered via oEmbed for %s", cleaned)
-        return fallback
+    if oembed_preview is None and not is_youtube:
+        oembed_preview, extra_404 = inspect_via_oembed(cleaned)
+        oembed_404 = oembed_404 or extra_404
+        if oembed_preview is not None:
+            return oembed_preview
 
-    if oembed_missing or last_error is None:
-        raise RuntimeError(f"NOT_FOUND|{MESSAGES['NOT_FOUND']}")
-    code, message = classify_ytdlp_error(last_error)
-    raise RuntimeError(f"{code}|{message}") from last_error
+    if last_error is not None:
+        classified = classify_error(last_error)
+        raise RuntimeError(f"{classified.code}|{classified.user_message}") from last_error
+    if oembed_404:
+        raise RuntimeError(f"EXTRACT_FAILED|{MESSAGES['EXTRACT_FAILED']}")
+    raise RuntimeError(f"EXTRACT_FAILED|{MESSAGES['EXTRACT_FAILED']}")
 
 
 def format_speed(bytes_per_sec: object) -> str:
@@ -275,6 +319,9 @@ def format_speed(bytes_per_sec: object) -> str:
 
 def make_progress_hook(job_id: str):
     def hook(payload: dict[str, Any]) -> None:
+        job = store.get(job_id)
+        if job is not None and job.cancel_event.is_set():
+            raise DownloadCancelled("job cancelled")
         status = payload.get("status")
         if status == "downloading":
             total = payload.get("total_bytes") or payload.get("total_bytes_estimate") or 0
@@ -309,16 +356,17 @@ def build_ydl_opts(
     quality: MediaQuality,
     job_dir: Path,
     player_clients: list[str] | None = None,
+    proxy: str | None = None,
+    use_cookies: bool = False,
 ) -> dict[str, Any]:
     outtmpl = str(job_dir / "%(title)s.%(ext)s")
     opts = base_ydl_opts(
+        player_clients=player_clients,
+        proxy=proxy,
+        use_cookies=use_cookies,
         windowsfilenames=True,
-        retries=3,
-        fragment_retries=3,
-        ignoreerrors=False,
         progress_hooks=[make_progress_hook(job_id)],
         outtmpl=outtmpl,
-        player_clients=player_clients,
     )
     ffmpeg_dir = resolve_ffmpeg_dir()
     if ffmpeg_dir is not None:
@@ -464,61 +512,326 @@ def ffmpeg_available() -> bool:
         return False
 
 
+def interruptible_sleep(job_id: str, seconds: float) -> None:
+    end = time.time() + max(0.0, seconds)
+    while time.time() < end:
+        job = store.get(job_id)
+        if job is None or job.cancel_event.is_set() or job.settled:
+            raise DownloadCancelled("job cancelled")
+        time.sleep(min(0.25, end - time.time()))
+
+
+def _job_ids(job_id: str) -> tuple[str | None, str | None]:
+    job = store.get(job_id)
+    return (job.request_id if job else None, job.snapshot_id if job else None)
+
+
+def _fail_job(job_id: str, url: str, media_type: str, quality: str, exc: BaseException, code: str, message: str) -> None:
+    logger.warning("Job %s failed (%s): %s", job_id, code, mask_text(str(exc)))
+    request_id, _snapshot = _job_ids(job_id)
+    emit_event(
+        event="failed",
+        stage="download",
+        request_id=request_id,
+        job_id=job_id,
+        error_code=code,
+        error_message=message,
+        exc=exc,
+        url=url,
+        media_type=media_type,
+        quality=quality,
+        origin="external" if code not in {"PROCESS_FAILED", "UNKNOWN"} else "internal",
+        extra={"final": True},
+    )
+    store.settle(job_id, "error", error_code=code, error_message=message)
+    delete_job_dir(job_id)
+
+
 def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQuality) -> None:
     job_dir = job_dir_for(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
+    store.mark_worker(job_id, True)
     store.update(job_id, status="downloading", percent=0.0, speed="0 KB/s")
+    request_id, _snapshot = _job_ids(job_id)
+    emit_event(
+        event="started",
+        stage="download",
+        request_id=request_id,
+        job_id=job_id,
+        media_type=media_type,
+        quality=quality,
+        url=url,
+        origin="internal",
+    )
 
     try:
         cleaned = canonicalize_media_url(validate_url(url))
-        last_error: Exception | None = None
-        for clients in download_client_attempts():
+        cookie_mode = _cookie_mode()
+        use_cookies = cookie_mode == "always" and has_cookies()
+        pot_ok = pot_ready()
+        clients = download_client_attempts(use_cookies=use_cookies or has_cookies(), pot_ok=pot_ok)
+        client_index = 0
+        routes = available_routes() or configured_routes()
+        route = routes[0]
+        attempts = 0
+        waits_used = 0
+        route_switches = 0
+        max_attempts = _int_env("MAX_JOB_ATTEMPTS", 4)
+        max_waits = _int_env("MAX_RATE_LIMIT_WAITS", 2)
+        max_route_switches = _int_env("MAX_ROUTE_SWITCHES", 1)
+        deadline = time.time() + _int_env("JOB_TIMEOUT_SECONDS", 720)
+        last_error: BaseException | None = None
+        last_code = "UNKNOWN"
+        last_message = MESSAGES["UNKNOWN"]
+
+        while attempts < max_attempts:
+            job = store.get(job_id)
+            if job is None or job.settled:
+                return
+            if job.cancel_event.is_set() or time.time() > deadline:
+                raise TimeoutError("TIMEOUT")
+
+            attempts += 1
+            clients_now = clients[client_index] if client_index < len(clients) else None
+            attempt_dir = job_dir / f"attempt_{attempts}"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            stage = "extract"
+            started = time.time()
+            store.update(
+                job_id,
+                status="downloading",
+                attempt=attempts,
+                route_alias=route.alias,
+                wait_reason=None,
+                detail="",
+            )
+            emit_event(
+                event="started",
+                stage="extract",
+                request_id=request_id,
+                job_id=job_id,
+                attempt_number=attempts,
+                strategy="default" if clients_now is None else "player_client",
+                client=",".join(clients_now) if clients_now else "default",
+                route_alias=route.alias,
+                media_type=media_type,
+                quality=quality,
+                url=cleaned,
+                origin="internal",
+            )
+
             try:
-                opts = build_ydl_opts(job_id, media_type, quality, job_dir, player_clients=clients)
+                opts = build_ydl_opts(
+                    job_id,
+                    media_type,
+                    quality,
+                    attempt_dir,
+                    player_clients=clients_now,
+                    proxy=route.proxy,
+                    use_cookies=use_cookies,
+                )
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(cleaned, download=False) or {}
                     if is_live(info):
                         raise RuntimeError("LIVE_STREAM")
+                    if store.get(job_id) and store.get(job_id).cancel_event.is_set():  # type: ignore[union-attr]
+                        raise DownloadCancelled("job cancelled")
+                    stage = "download"
                     ydl.process_ie_result(info, download=True)
-                last_error = None
-                break
-            except RuntimeError as exc:
-                if str(exc) == "LIVE_STREAM":
-                    raise
-                last_error = exc
-                logger.warning("Download attempt failed (%s): %s", clients or "default", exc)
+
+                stage = "process"
+                output = find_media_file(attempt_dir)
+                if output is None:
+                    raise RuntimeError("PROCESS_FAILED")
+
+                recover_route(route.alias)
+                filename = sanitize_filename(output.name)
+                settled = store.settle(
+                    job_id,
+                    "done",
+                    percent=100.0,
+                    file_path=output,
+                    filename=filename,
+                    download_url=f"/api/fetch/{job_id}",
+                    detail="",
+                )
+                emit_event(
+                    event="succeeded",
+                    stage="postprocess",
+                    request_id=request_id,
+                    job_id=job_id,
+                    attempt_number=attempts,
+                    client=",".join(clients_now) if clients_now else "default",
+                    route_alias=route.alias,
+                    media_type=media_type,
+                    quality=quality,
+                    url=cleaned,
+                    elapsed_ms=int((time.time() - started) * 1000),
+                    origin="internal",
+                )
+                if settled is None:
+                    delete_job_dir(job_id)
+                return
+            except DownloadCancelled:
+                emit_event(
+                    event="cancelled",
+                    stage=stage,
+                    request_id=request_id,
+                    job_id=job_id,
+                    attempt_number=attempts,
+                    error_code="TIMEOUT",
+                    error_message=MESSAGES["TIMEOUT"],
+                    media_type=media_type,
+                    quality=quality,
+                    url=cleaned,
+                    origin="internal",
+                )
+                store.settle(job_id, "error", error_code="TIMEOUT", error_message=MESSAGES["TIMEOUT"])
+                delete_job_dir(job_id)
+                return
             except Exception as exc:
+                if str(exc) == "LIVE_STREAM":
+                    classified_code, classified_message = "LIVE_STREAM", MESSAGES["LIVE_STREAM"]
+                    retry_after = None
+                elif str(exc) == "PROCESS_FAILED":
+                    classified_code, classified_message = "PROCESS_FAILED", MESSAGES["PROCESS_FAILED"]
+                    retry_after = None
+                else:
+                    classified = classify_error(exc)
+                    classified_code, classified_message = classified.code, classified.user_message
+                    retry_after = classified.retry_after
+
                 last_error = exc
-                logger.warning("Download attempt failed (%s): %s", clients or "default", exc)
-        if last_error is not None:
-            raise last_error
+                last_code = classified_code
+                last_message = classified_message
+                logger.info(
+                    "youtube_attempt %s",
+                    diagnostic_record(
+                        job_id=job_id,
+                        attempt=attempts,
+                        stage=stage,
+                        route_alias=route.alias,
+                        client=",".join(clients_now) if clients_now else "default",
+                        elapsed_ms=int((time.time() - started) * 1000),
+                        code=classified_code,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    ),
+                )
+                emit_event(
+                    event="failed",
+                    stage=stage if stage != "process" else "postprocess",
+                    request_id=request_id,
+                    job_id=job_id,
+                    attempt_number=attempts,
+                    error_code=classified_code,
+                    error_message=classified_message,
+                    exc=exc,
+                    client=",".join(clients_now) if clients_now else "default",
+                    route_alias=route.alias,
+                    media_type=media_type,
+                    quality=quality,
+                    url=cleaned,
+                    elapsed_ms=int((time.time() - started) * 1000),
+                    origin="external" if classified_code not in {"PROCESS_FAILED", "UNKNOWN", "FFMPEG_FAILED"} else "internal",
+                    extra={"final": False},
+                )
 
-        output = find_media_file(job_dir)
-        if output is None:
-            raise RuntimeError("PROCESS_FAILED")
+                can_use_cookies = (
+                    cookie_mode != "never"
+                    and cookie_state() == "file_present"
+                    and not use_cookies
+                )
+                decision = decide_next(
+                    classified_code,
+                    stage=stage,
+                    attempts=attempts,
+                    max_attempts=max_attempts,
+                    waits_used=waits_used,
+                    max_waits=max_waits,
+                    route_switches=route_switches,
+                    max_route_switches=max_route_switches,
+                    has_next_client=client_index + 1 < len(clients),
+                    has_next_route=next_route(route.alias) is not None,
+                    can_use_cookies=can_use_cookies,
+                    retry_after=retry_after,
+                )
+                if decision.cool_seconds:
+                    cool_route(route.alias, decision.cool_seconds)
 
-        filename = sanitize_filename(output.name)
-        store.update(
-            job_id,
-            status="done",
-            percent=100.0,
-            file_path=output,
-            filename=filename,
-            download_url=f"/api/fetch/{job_id}",
-            detail="",
-        )
-    except Exception as exc:
-        if str(exc) == "LIVE_STREAM":
-            code, message = "LIVE_STREAM", MESSAGES["LIVE_STREAM"]
-        elif str(exc) == "PROCESS_FAILED":
-            code, message = "PROCESS_FAILED", MESSAGES["PROCESS_FAILED"]
-        else:
-            code, message = classify_ytdlp_error(exc)
-        logger.exception("Job %s failed: %s", job_id, exc)
-        store.update(
-            job_id,
-            status="error",
-            error_code=code,
-            error_message=message,
-        )
+                if decision.action == "fail":
+                    break
+                retry_ms = int((decision.delay or 0) * 1000)
+                emit_event(
+                    event="retry_scheduled",
+                    stage=stage,
+                    request_id=request_id,
+                    job_id=job_id,
+                    attempt_number=attempts,
+                    error_code=classified_code,
+                    strategy=decision.action,
+                    client=",".join(clients_now) if clients_now else "default",
+                    route_alias=route.alias,
+                    media_type=media_type,
+                    quality=quality,
+                    url=cleaned,
+                    retry_in_ms=retry_ms,
+                    origin="internal",
+                )
+                if decision.action == "use_cookies":
+                    use_cookies = True
+                    store.update(job_id, status="retrying", detail="저장된 로그인 정보로 다시 시도합니다.", wait_reason="cookies")
+                    continue
+                if decision.action == "wait":
+                    waits_used += 1
+                    delay = decision.delay + random.uniform(0.15, 0.9)
+                    store.update(
+                        job_id,
+                        status="retrying",
+                        detail="요청 제한으로 대기 중...",
+                        wait_reason="rate_limit",
+                    )
+                    interruptible_sleep(job_id, delay)
+                    continue
+                if decision.action == "retry_client":
+                    client_index += 1
+                    store.update(job_id, status="retrying", detail="다른 추출 방식으로 재시도 중...", wait_reason="client")
+                    continue
+                if decision.action == "switch_route":
+                    nxt = next_route(route.alias)
+                    if nxt is None:
+                        break
+                    route = nxt
+                    route_switches += 1
+                    client_index = 0
+                    store.update(
+                        job_id,
+                        status="retrying",
+                        detail="다른 네트워크 경로로 다시 준비 중...",
+                        wait_reason="route",
+                        route_alias=route.alias,
+                    )
+                    continue
+                if decision.action == "reextract":
+                    store.update(job_id, status="retrying", detail="재생 주소를 다시 준비하는 중...", wait_reason="reextract")
+                    continue
+                if decision.action == "retry_same":
+                    store.update(job_id, status="retrying", detail="연결 재시도 중...", wait_reason="network")
+                    interruptible_sleep(job_id, decision.delay + random.uniform(0.1, 0.4))
+                    continue
+                break
+
+        if last_error is None:
+            last_error = RuntimeError(last_code)
+        _fail_job(job_id, url, media_type, quality, last_error, last_code, last_message)
+    except DownloadCancelled:
+        store.settle(job_id, "error", error_code="TIMEOUT", error_message=MESSAGES["TIMEOUT"])
         delete_job_dir(job_id)
+    except TimeoutError:
+        store.settle(job_id, "error", error_code="TIMEOUT", error_message=MESSAGES["TIMEOUT"])
+        delete_job_dir(job_id)
+    except Exception as exc:
+        classified = classify_error(exc)
+        _fail_job(job_id, url, media_type, quality, exc, classified.code, classified.user_message)
+    finally:
+        store.mark_worker(job_id, False)

@@ -29,11 +29,25 @@ def snapshot_event(job: Job) -> tuple[str, dict[str, Any]]:
             "status": "processing",
             "detail": job.detail or job.processing_copy(),
         }
+    if job.status == "queued":
+        return "queued", {
+            "status": "queued",
+            "detail": job.detail or "대기열에서 순서를 기다리는 중...",
+        }
+    if job.status == "retrying":
+        return "retrying", {
+            "status": "retrying",
+            "detail": job.detail or "연결 재시도 중...",
+            "wait_reason": job.wait_reason,
+            "attempt": job.attempt,
+        }
     return "progress", {
         "status": "downloading",
         "percent": job.percent,
         "speed": job.speed,
         "eta": job.eta,
+        "attempt": job.attempt,
+        "detail": job.detail,
     }
 
 
