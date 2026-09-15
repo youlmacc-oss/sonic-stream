@@ -134,6 +134,7 @@ def apply_youtube_auth(
     opts: dict[str, Any],
     proxy: str | None = None,
     use_cookies: bool = True,
+    use_impersonate: bool = True,
 ) -> dict[str, Any]:
     if use_cookies:
         cookiefile = resolve_cookiefile()
@@ -141,11 +142,14 @@ def apply_youtube_auth(
             opts["cookiefile"] = cookiefile
     if proxy:
         opts["proxy"] = proxy
-    impersonate = resolve_impersonate()
-    if impersonate is not None:
-        opts["impersonate"] = impersonate
-        opts.pop("user_agent", None)
-        opts.pop("http_headers", None)
+    if use_impersonate:
+        impersonate = resolve_impersonate()
+        if impersonate is not None:
+            opts["impersonate"] = impersonate
+            opts.pop("user_agent", None)
+            opts.pop("http_headers", None)
+    else:
+        opts.pop("impersonate", None)
     return opts
 
 

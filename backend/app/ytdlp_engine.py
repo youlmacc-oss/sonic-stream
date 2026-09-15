@@ -101,6 +101,9 @@ def download_client_attempts(*, use_cookies: bool, pot_ok: bool) -> list[list[st
         attempts.append(["android_vr"])
     else:
         # No-POT clients first after default. Datacenter IPs often fail default with BOT_CHECK.
+        attempts.append(["tv"])
+        attempts.append(["android"])
+        attempts.append(["mweb"])
         attempts.append(["web_safari"])
         attempts.append(["android_vr"])
         attempts.append(["web_embedded"])
@@ -173,11 +176,13 @@ def apply_ip_mode(opts: dict[str, Any]) -> dict[str, Any]:
 def base_ydl_opts(
     *,
     player_clients: list[str] | None = None,
+    use_impersonate: bool = True,
     proxy: str | None = None,
     use_cookies: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
     extra.pop("player_clients", None)
+    extra.pop("use_impersonate", None)
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": False,
@@ -199,7 +204,7 @@ def base_ydl_opts(
     apply_ip_mode(opts)
     if pot_ready():
         apply_pot(opts)
-    apply_youtube_auth(opts, proxy=proxy, use_cookies=use_cookies)
+    apply_youtube_auth(opts, proxy=proxy, use_cookies=use_cookies, use_impersonate=use_impersonate)
     opts.update(extra)
     return opts
 
@@ -407,6 +412,7 @@ def build_ydl_opts(
     player_clients: list[str] | None = None,
     proxy: str | None = None,
     use_cookies: bool = False,
+    use_impersonate: bool = True,
     attempt_number: int | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
@@ -415,6 +421,7 @@ def build_ydl_opts(
         player_clients=player_clients,
         proxy=proxy,
         use_cookies=use_cookies,
+        use_impersonate=use_impersonate,
         windowsfilenames=True,
         progress_hooks=[make_progress_hook(job_id)],
         outtmpl=outtmpl,
@@ -632,7 +639,9 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
         attempts = 0
         waits_used = 0
         route_switches = 0
-        max_attempts = _int_env("MAX_JOB_ATTEMPTS", 6)
+        use_impersonate = True
+        impersonate_reset = False
+        max_attempts = _int_env("MAX_JOB_ATTEMPTS", 10)
         max_waits = _int_env("MAX_RATE_LIMIT_WAITS", 2)
         max_route_switches = _int_env("MAX_ROUTE_SWITCHES", 1)
         deadline = time.time() + _int_env("JOB_TIMEOUT_SECONDS", 720)
@@ -685,6 +694,7 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     player_clients=clients_now,
                     proxy=route.proxy,
                     use_cookies=use_cookies,
+                    use_impersonate=use_impersonate,
                     attempt_number=attempts,
                     request_id=request_id,
                 )
@@ -820,6 +830,28 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     cool_route(route.alias, decision.cool_seconds)
 
                 if decision.action == "fail":
+                    if classified_code == "BOT_CHECK" and use_impersonate and not impersonate_reset:
+                        use_impersonate = False
+                        impersonate_reset = True
+                        clients = [None, ["tv"]]
+                        client_index = 0
+                        emit_event(
+                            event="retry_scheduled",
+                            stage=stage,
+                            request_id=request_id,
+                            job_id=job_id,
+                            attempt_number=attempts,
+                            error_code=classified_code,
+                            strategy="retry_no_impersonate",
+                            client="default",
+                            route_alias=route.alias,
+                            media_type=media_type,
+                            quality=quality,
+                            url=cleaned,
+                            origin="internal",
+                        )
+                        store.update(job_id, status="retrying", detail="다른 연결 방식으로 재시도 중...", wait_reason="client")
+                        continue
                     break
                 retry_ms = int((decision.delay or 0) * 1000)
                 emit_event(

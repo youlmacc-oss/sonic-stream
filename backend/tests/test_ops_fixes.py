@@ -19,7 +19,7 @@ from app.policy import decide_next
 from app.quality import format_fits_quality, pick_video_format
 from app.routes import configured_routes
 from app.runtime import enabled_js_runtimes
-from app.ytdlp_engine import JobYDLLogger
+from app.ytdlp_engine import JobYDLLogger, download_client_attempts
 from app.youtube_auth import apply_youtube_auth, cookie_state, resolve_cookiefile
 
 
@@ -198,6 +198,15 @@ class OpsFixTests(unittest.TestCase):
         self.assertTrue(format_fits_quality(tall1080, "1080p"))
         chosen = pick_video_format([portrait, landscape, tall1080], "1080p")
         self.assertEqual(chosen["format_id"], "t")
+
+    def test_cookie_free_clients_include_tv_and_android(self) -> None:
+        attempts = download_client_attempts(use_cookies=False, pot_ok=False)
+        self.assertIn(["tv"], attempts)
+        self.assertIn(["android"], attempts)
+        self.assertIn(["mweb"], attempts)
+        opts = apply_youtube_auth({}, use_cookies=False, use_impersonate=False)
+        self.assertNotIn("impersonate", opts)
+        self.assertNotIn("cookiefile", opts)
 
     def test_js_runtime_prefers_node_when_both_exist(self) -> None:
         with patch("app.runtime.js_runtime_status", return_value={"deno": True, "node": True}):
