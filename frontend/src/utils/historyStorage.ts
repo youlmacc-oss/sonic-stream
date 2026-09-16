@@ -49,18 +49,32 @@ export function persistHistory(items: DownloadHistoryItem[]): DownloadHistoryIte
 }
 
 export function addHistoryItem(
-  draft: Omit<DownloadHistoryItem, 'id' | 'downloadedAt'>,
-): DownloadHistoryItem[] {
-  const downloadedAt = Date.now();
+  draft: Omit<DownloadHistoryItem, 'id' | 'downloadedAt'> & { id?: string; downloadedAt?: number },
+): DownloadHistoryItem {
+  const downloadedAt = draft.downloadedAt ?? Date.now();
   const item: DownloadHistoryItem = {
     ...draft,
-    id: `${downloadedAt}-${Math.random().toString(36).slice(2, 8)}`,
+    id: draft.id || `${downloadedAt}-${Math.random().toString(36).slice(2, 8)}`,
     downloadedAt,
   };
-  const current = loadHistory().filter(
-    (entry) => !(entry.url === item.url && entry.type === item.type && entry.quality === item.quality),
-  );
-  return persistHistory([item, ...current]);
+  const current = loadHistory().filter((entry) => entry.id !== item.id);
+  persistHistory([item, ...current]);
+  return item;
+}
+
+export function updateHistoryItem(
+  id: string,
+  patch: Partial<DownloadHistoryItem>,
+): DownloadHistoryItem | null {
+  const current = loadHistory();
+  let updated: DownloadHistoryItem | null = null;
+  const next = current.map((item) => {
+    if (item.id !== id) return item;
+    updated = { ...item, ...patch, id: item.id, url: item.url, type: item.type, quality: item.quality };
+    return updated;
+  });
+  persistHistory(next);
+  return updated;
 }
 
 export function removeHistoryItem(id: string): DownloadHistoryItem[] {

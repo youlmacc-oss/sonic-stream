@@ -20,7 +20,8 @@ from yt_dlp.utils import DownloadCancelled
 from app.classify import classify_error
 from app.diagnostics import diagnostic_record, mask_text
 from app.errors import MESSAGES
-from app.quality import video_format_selector
+from app.local_runtime import is_local, probe_media, promote_local_file, runtime_location
+from app.quality import describe_resolution, orientation_of, select_download_format, video_format_selector
 from app.gc import delete_job_dir, job_dir_for
 from app.jobs import store
 from app.models import InspectResponse, MediaQuality, MediaType
@@ -87,7 +88,7 @@ def validate_url(url: str) -> str:
 
 
 def validate_combo(media_type: MediaType, quality: MediaQuality) -> None:
-    video_ok = media_type == "video" and quality in {"1080p", "4k"}
+    video_ok = media_type == "video" and quality in {"best", "720p", "1080p", "4k"}
     audio_ok = media_type == "audio" and quality in {"320k", "flac"}
     if not (video_ok or audio_ok):
         raise ValueError("PROCESS_FAILED")
@@ -127,10 +128,20 @@ def inspect_client_attempts() -> list[list[str] | None]:
 
 
 class JobYDLLogger:
-    def __init__(self, job_id: str, attempt_number: int | None = None, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        attempt_number: int | None = None,
+        request_id: str | None = None,
+        stage: str = "extract",
+    ) -> None:
         self.job_id = job_id
         self.attempt_number = attempt_number
         self.request_id = request_id
+        self.stage = stage
+
+    def set_stage(self, stage: str) -> None:
+        self.stage = stage
 
     def debug(self, msg: object) -> None:
         self._emit(str(msg), "debug")
@@ -154,7 +165,7 @@ class JobYDLLogger:
             return
         emit_event(
             event="warning",
-            stage="extract",
+            stage=self.stage,
             request_id=self.request_id,
             job_id=self.job_id,
             attempt_number=self.attempt_number,
@@ -295,9 +306,11 @@ def inspect_via_oembed(url: str) -> tuple[InspectResponse | None, bool]:
         return InspectResponse(
             title=title,
             author=str(data.get("author_name") or data.get("author") or "Unknown"),
-            duration="00:00",
+            duration="",
             thumbnail=str(data.get("thumbnail_url") or ""),
             preview_only=True,
+            duration_known=False,
+            webpage_url=url,
         ), False
     return None, saw_404
 
@@ -308,12 +321,27 @@ def inspect_to_response(info: dict[str, Any]) -> InspectResponse:
     title = str(info.get("title") or info.get("fulltitle") or "").strip()
     if not title:
         raise RuntimeError(f"EXTRACT_FAILED|{MESSAGES['EXTRACT_FAILED']}")
+    try:
+        width = int(info.get("width") or 0) or None
+    except (TypeError, ValueError):
+        width = None
+    try:
+        height = int(info.get("height") or 0) or None
+    except (TypeError, ValueError):
+        height = None
+    duration_raw = info.get("duration")
     return InspectResponse(
         title=title,
         author=pick_author(info),
-        duration=format_duration(info.get("duration")),
+        duration=format_duration(duration_raw) if duration_raw is not None else "",
         thumbnail=pick_thumbnail(info),
         preview_only=False,
+        duration_known=duration_raw is not None,
+        width=width,
+        height=height,
+        aspect_ratio=describe_resolution(width, height),
+        orientation=orientation_of(width, height),
+        webpage_url=str(info.get("webpage_url") or "") or None,
     )
 
 
@@ -704,16 +732,52 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                         raise RuntimeError("LIVE_STREAM")
                     if store.get(job_id) and store.get(job_id).cancel_event.is_set():  # type: ignore[union-attr]
                         raise DownloadCancelled("job cancelled")
+                    logger_obj = opts.get("logger")
+                    if media_type == "video":
+                        chosen, spec = select_download_format(
+                            list(info.get("formats") or []),
+                            quality,
+                            rotation=info.get("rotation") or 0,
+                        )
+                        params = getattr(ydl, "params", None)
+                        if isinstance(params, dict):
+                            params["format"] = spec
+                        if chosen:
+                            store.update(
+                                job_id,
+                                actual_width=int(chosen.get("width") or 0) or None,
+                                actual_height=int(chosen.get("height") or 0) or None,
+                                actual_quality=describe_resolution(chosen.get("width"), chosen.get("height")),
+                                detail="선택한 화질로 받는 중...",
+                            )
                     stage = "download"
+                    if isinstance(logger_obj, JobYDLLogger):
+                        logger_obj.set_stage("download")
                     ydl.process_ie_result(info, download=True)
 
                 stage = "process"
+                if isinstance(opts.get("logger"), JobYDLLogger):
+                    opts["logger"].set_stage("process")
                 output = find_media_file(attempt_dir)
                 if output is None:
                     raise RuntimeError("PROCESS_FAILED")
 
                 recover_route(route.alias)
                 filename = sanitize_filename(output.name)
+                saved_path = None
+                file_bytes = output.stat().st_size if output.exists() else None
+                verified = False
+                delivery = "browser"
+                probe: dict = {}
+                if is_local():
+                    saved = promote_local_file(output, filename)
+                    saved_path = str(saved)
+                    file_bytes = saved.stat().st_size
+                    probe = probe_media(saved, resolve_ffmpeg_dir())
+                    verified = bool(probe.get("ok")) and file_bytes > 0
+                    if media_type == "video" and not probe.get("has_video"):
+                        verified = False
+                    delivery = "local_file"
                 settled = store.settle(
                     job_id,
                     "done",
@@ -721,6 +785,13 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                     file_path=output,
                     filename=filename,
                     download_url=f"/api/fetch/{job_id}",
+                    saved_path=saved_path,
+                    file_bytes=file_bytes,
+                    verified=verified,
+                    location=runtime_location(),
+                    delivery=delivery,
+                    actual_width=probe.get("width") or getattr(store.get(job_id), "actual_width", None),
+                    actual_height=probe.get("height") or getattr(store.get(job_id), "actual_height", None),
                     detail="",
                 )
                 emit_event(

@@ -16,7 +16,7 @@ from app.eventlog import emit_event
 from app.log_backup import LogBackup
 from app.log_store import reset_store
 from app.policy import decide_next
-from app.quality import format_fits_quality, pick_video_format
+from app.quality import format_display_size, format_fits_quality, pick_video_format, select_download_format
 from app.routes import configured_routes
 from app.runtime import enabled_js_runtimes
 from app.ytdlp_engine import JobYDLLogger, download_client_attempts
@@ -198,6 +198,30 @@ class OpsFixTests(unittest.TestCase):
         self.assertTrue(format_fits_quality(tall1080, "1080p"))
         chosen = pick_video_format([portrait, landscape, tall1080], "1080p")
         self.assertEqual(chosen["format_id"], "t")
+
+    def test_actual_selector_prefers_720x1280_over_608x1080(self) -> None:
+        formats = [
+            {"format_id": "608", "width": 608, "height": 1080, "vcodec": "avc1", "acodec": "none", "tbr": 900},
+            {"format_id": "720", "width": 720, "height": 1280, "vcodec": "avc1", "acodec": "none", "tbr": 1100},
+            {"format_id": "audio", "vcodec": "none", "acodec": "mp4a", "tbr": 128},
+        ]
+        chosen, spec = select_download_format(formats, "1080p")
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["format_id"], "720")
+        self.assertTrue(spec.startswith("720+bestaudio"))
+
+    def test_landscape_1080p_and_square_and_rotation(self) -> None:
+        landscape = {"format_id": "l", "width": 1920, "height": 1080, "vcodec": "avc1", "acodec": "none", "tbr": 2000}
+        square = {"format_id": "s", "width": 1080, "height": 1080, "vcodec": "avc1", "acodec": "none", "tbr": 1200}
+        rotated = {"format_id": "r", "width": 1280, "height": 720, "rotation": 90, "vcodec": "avc1", "acodec": "none", "tbr": 900}
+        self.assertEqual(format_display_size(rotated), (720, 1280))
+        self.assertEqual(pick_video_format([landscape, square], "1080p")["format_id"], "l")
+        chosen_rot = pick_video_format([rotated, {"format_id": "608", "width": 608, "height": 1080, "vcodec": "avc1", "tbr": 800}], "1080p")
+        self.assertEqual(chosen_rot["format_id"], "r")
+        low = {"format_id": "480", "width": 480, "height": 854, "vcodec": "avc1", "acodec": "aac", "tbr": 400}
+        self.assertEqual(pick_video_format([low], "1080p")["format_id"], "480")
+        audio_only = [{"format_id": "a", "vcodec": "none", "acodec": "mp4a", "tbr": 128}]
+        self.assertIsNone(pick_video_format(audio_only, "1080p"))
 
     def test_cookie_free_clients_include_tv_and_android(self) -> None:
         attempts = download_client_attempts(use_cookies=False, pot_ok=False)

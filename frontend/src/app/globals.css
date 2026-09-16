@@ -28,6 +28,16 @@
 
 html,
 body {
-  background-color: #0b0c10;
+  background-color: #09090b;
   color: #f4f4f5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

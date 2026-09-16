@@ -19,6 +19,7 @@ from app.bundle import build_bundle, bundle_json_bytes, bundle_zip_bytes
 from app.env_snapshot import capture_snapshot, current_snapshot, deploy_version, snapshot_id
 from app.errors import MESSAGES, raise_api_error
 from app.eventlog import emit_event
+from app.local_runtime import is_loopback_host, is_local, runtime_status
 from app.gc import cleanup_job, delete_job_dir, sweep_expired
 from app.jobs import store
 from app.limiter import limiter
@@ -82,7 +83,10 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="SonicStream", lifespan=lifespan)
 
-DEFAULT_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+DEFAULT_ORIGINS = (
+    "http://localhost:3000,http://127.0.0.1:3000,"
+    "http://localhost:8000,http://127.0.0.1:8000"
+)
 
 
 def allowed_origins() -> list[str]:
@@ -93,6 +97,21 @@ def allowed_origins() -> list[str]:
 
 def admin_token() -> str:
     return (os.getenv("ADMIN_TOKEN") or os.getenv("DEBUG_BACKLOG_TOKEN") or "").strip()
+
+
+def require_trusted_client(request: Request) -> None:
+    if not is_local():
+        return
+    host = (request.headers.get("host") or "").strip()
+    origin = (request.headers.get("origin") or "").strip()
+    if host and not is_loopback_host(host):
+        raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "로컬 실행만 허용됩니다."})
+    if origin:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(origin)
+        if not is_loopback_host(parsed.hostname or ""):
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "허용되지 않은 출처입니다."})
 
 
 def require_admin(request: Request) -> None:
@@ -195,6 +214,57 @@ def _inspect_error_payload(exc: BaseException) -> tuple[str, str]:
     return "EXTRACT_FAILED", raw or MESSAGES["EXTRACT_FAILED"]
 
 
+@app.get("/api/runtime")
+async def runtime() -> dict[str, object]:
+    snapshot = current_snapshot()
+    status = runtime_status(ffmpeg_available())
+    status.update(
+        {
+            "commit": deploy_version(),
+            "yt_dlp": snapshot.get("yt_dlp"),
+            "location_label": "내 PC" if is_local() else "서버",
+        }
+    )
+    return status
+
+
+@app.get("/api/jobs/{job_id}")
+async def job_status(job_id: str) -> dict[str, object]:
+    job = store.get(job_id)
+    if job is None:
+        raise_api_error("JOB_NOT_FOUND")
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "percent": job.percent,
+        "detail": job.detail,
+        "speed": job.speed,
+        "eta": job.eta,
+        "download_url": job.download_url,
+        "saved_path": job.saved_path,
+        "file_bytes": job.file_bytes,
+        "verified": job.verified,
+        "location": job.location,
+        "delivery": job.delivery,
+        "width": job.actual_width,
+        "height": job.actual_height,
+        "actual_quality": job.actual_quality,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "filename": job.filename,
+    }
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
+    require_trusted_client(request)
+    job = store.get(job_id)
+    if job is None:
+        raise_api_error("JOB_NOT_FOUND")
+    store.request_cancel(job_id)
+    return {"job_id": job_id, "cancel_requested": True}
+
+
 @app.post("/api/inspect", response_model=InspectResponse)
 async def inspect(body: InspectRequest, request: Request) -> InspectResponse:
     request_id = _request_id(request)
@@ -231,6 +301,7 @@ async def inspect(body: InspectRequest, request: Request) -> InspectResponse:
 
 @app.post("/api/download", response_model=DownloadAccepted, status_code=202)
 async def download(body: DownloadRequest, request: Request) -> DownloadAccepted:
+    require_trusted_client(request)
     try:
         validate_url(body.url)
     except ValueError:

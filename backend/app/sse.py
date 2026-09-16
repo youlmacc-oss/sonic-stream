@@ -24,6 +24,15 @@ def snapshot_event(job: Job) -> tuple[str, dict[str, Any]]:
         return "complete", {
             "status": "done",
             "download_url": job.download_url or f"/api/fetch/{job.id}",
+            "saved_path": job.saved_path,
+            "file_bytes": job.file_bytes,
+            "verified": job.verified,
+            "location": job.location,
+            "delivery": job.delivery or ("local_file" if job.saved_path else "browser"),
+            "width": job.actual_width,
+            "height": job.actual_height,
+            "actual_quality": job.actual_quality,
+            "job_id": job.id,
         }
     if job.status == "processing":
         return "processing", {

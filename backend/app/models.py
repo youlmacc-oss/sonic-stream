@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 MediaType = Literal["video", "audio"]
-MediaQuality = Literal["1080p", "4k", "320k", "flac"]
+MediaQuality = Literal["best", "720p", "1080p", "4k", "320k", "flac"]
 JobStatus = Literal["queued", "retrying", "downloading", "processing", "done", "error"]
 ACTIVE_STATUSES = {"queued", "retrying", "downloading", "processing"}
 
@@ -23,6 +23,12 @@ class InspectResponse(BaseModel):
     duration: str
     thumbnail: str
     preview_only: bool = False
+    duration_known: bool = False
+    width: int | None = None
+    height: int | None = None
+    aspect_ratio: str | None = None
+    orientation: str | None = None
+    webpage_url: str | None = None
 
 
 class DownloadRequest(BaseModel):
@@ -65,6 +71,14 @@ class Job:
         self.download_url: str | None = None
         self.file_path: Path | None = None
         self.filename: str | None = None
+        self.saved_path: str | None = None
+        self.file_bytes: int | None = None
+        self.verified: bool = False
+        self.location: str = "server"
+        self.actual_width: int | None = None
+        self.actual_height: int | None = None
+        self.actual_quality: str | None = None
+        self.delivery: str | None = None
         self.error_code: str | None = None
         self.error_message: str | None = None
         self.attempt: int = 0

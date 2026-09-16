@@ -95,7 +95,7 @@ export function useTabProgress(status: TabProgressStatus, percent: number) {
 
     if (status === 'completed') {
       holdingComplete.current = true;
-      document.title = '✓ 다운로드 완료! | SonicStream';
+      document.title = '다운로드 시작됨 | SonicStream';
       paintFavicon(100, true);
       restoreTimer.current = window.setTimeout(() => {
         holdingComplete.current = false;

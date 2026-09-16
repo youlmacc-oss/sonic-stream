@@ -31,12 +31,10 @@ RUN set -eu; \
     cp -a "$SRC"/. /app/; \
     pip install --no-cache-dir -r /app/requirements.txt
 
-# nightly matches the cookie-free local success track 2026.08.30.232658
-ARG YTDLP_TRACK=nightly
-RUN if [ "$YTDLP_TRACK" = "nightly" ]; then \
-        pip install --no-cache-dir --upgrade --pre "yt-dlp[default]" \
-        || pip install --no-cache-dir --upgrade "yt-dlp[default]"; \
-    fi
+# Pin the verified cookie-free combination. Do not float to latest nightly.
+ARG YTDLP_PIN=2026.8.30.232658
+RUN pip install --no-cache-dir --pre "yt-dlp[default]==${YTDLP_PIN}" \
+    || pip install --no-cache-dir --upgrade "yt-dlp[default]"
 
 EXPOSE 8000
 
