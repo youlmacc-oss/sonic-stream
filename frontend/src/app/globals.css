@@ -26,10 +26,32 @@
   }
 }
 
+:root {
+  --ss-body: 14px;
+  --ss-title: 17px;
+  --ss-button: 14px;
+  --ss-tap: 36px;
+}
+
+html.large-type {
+  --ss-body: 16px;
+  --ss-title: 20px;
+  --ss-button: 16px;
+  --ss-tap: 40px;
+}
+
 html,
 body {
+  overflow: hidden;
   background-color: #09090b;
   color: #f4f4f5;
+  font-size: var(--ss-body);
+  line-height: 1.4;
+}
+
+button:not(.ss-link),
+input:not([type="checkbox"]):not([type="radio"]) {
+  min-height: var(--ss-tap);
 }
 
 @media (prefers-reduced-motion: reduce) {

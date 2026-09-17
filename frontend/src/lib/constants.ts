@@ -25,7 +25,19 @@ export interface RuntimeInfo {
   ejs?: boolean;
   cookies?: string;
   save_dir?: string | null;
+  autostart?: boolean;
+  openai?: string;
+  openai_label?: string;
+  openai_configured?: boolean;
   commit?: string;
+  installer?: {
+    available?: boolean;
+    filename?: string;
+    bytes?: number | null;
+    url?: string;
+    setup_url?: string;
+    setup_name?: string;
+  };
 }
 
 export function getApiBase(): string {

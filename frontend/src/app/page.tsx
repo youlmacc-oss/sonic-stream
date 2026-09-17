@@ -1,10 +1,15 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { Clipboard, Monitor, Music, Server, Smartphone, Video } from 'lucide-react';
-import DownloadButton from '@/components/DownloadButton';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Clipboard, HelpCircle, Music, Smartphone, Video } from 'lucide-react';
+import ApiStatus from '@/components/ApiStatus';
+import DesktopSettings from '@/components/DesktopSettings';
+import DownloadButton, { type StartDownloadOpts } from '@/components/DownloadButton';
 import HistoryPanel from '@/components/HistoryPanel';
+import InstallGuideWindow from '@/components/InstallGuideWindow';
+import InstallNeeded from '@/components/InstallNeeded';
 import PreviewPane from '@/components/PreviewPane';
+import WindowControls from '@/components/WindowControls';
 import {
   getApiBase,
   type MediaFormat,
@@ -12,9 +17,12 @@ import {
   type MediaQuality,
   type PresentationMode,
   type RuntimeInfo,
-  type RuntimeLocation,
 } from '@/lib/constants';
 import type { DownloadHistoryItem } from '@/types/history';
+import { SEARCH_CHANNEL, notifyStartDownloadResult, openHelpWindow, openInstallWindow } from '@/lib/searchWindow';
+import { keepCurrentWindowAboveTaskbar } from '@/lib/workArea';
+import { isDeployedSite } from '@/lib/site';
+import { applyLargeTypeClass, loadLargeType, persistLargeType, subscribeLargeType } from '@/utils/textSize';
 
 const VIDEO_QUALITIES: MediaQuality[] = ['best', '720p', '1080p', '4k'];
 const AUDIO_QUALITIES: MediaQuality[] = ['320k', 'flac'];
@@ -37,11 +45,14 @@ export default function Home() {
   const [pasteButtonLabel, setPasteButtonLabel] = useState('붙여넣기');
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [advanced, setAdvanced] = useState(false);
+  const largeType = useSyncExternalStore(subscribeLargeType, loadLargeType, () => false);
+  const [needsInstall, setNeedsInstall] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const startRef = useRef<((opts?: StartDownloadOpts) => void) | null>(null);
   const pasteHintTimer = useRef<number | null>(null);
 
   const format: MediaFormat = mode === 'audio' ? 'audio' : 'video';
-  const location: RuntimeLocation = runtime?.location === 'local' ? 'local' : 'server';
 
   const isMobileViewport = () => {
     if (typeof window === 'undefined') return false;
@@ -106,15 +117,109 @@ export default function Home() {
     showPasteFallback();
   };
 
+  useEffect(() => keepCurrentWindowAboveTaskbar(), []);
+
   useEffect(() => {
+    applyLargeTypeClass(largeType);
+  }, [largeType]);
+
+  useEffect(() => {
+    const takeUrl = (value: unknown) => {
+      if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+        setUrl(value);
+      }
+    };
+    let lastStartKey = '';
+    let lastStartAt = 0;
+    const startFromSearch = (data: { requestId?: string; url?: string; format?: string; quality?: string; title?: string; author?: string; thumbnail?: string; duration?: string }) => {
+      if (typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url)) {
+        if (data.requestId) notifyStartDownloadResult(data.requestId, false, '주소가 올바르지 않습니다.');
+        return;
+      }
+      const format: MediaFormat = data.format === 'audio' ? 'audio' : 'video';
+      const quality: MediaQuality = format === 'audio' ? '320k' : '1080p';
+      const key = `${data.url}|${format}|${quality}`;
+      const now = Date.now();
+      if (key === lastStartKey && now - lastStartAt < 2000) {
+        if (data.requestId) notifyStartDownloadResult(data.requestId, false, '같은 받기가 이미 진행 중입니다.');
+        return;
+      }
+      lastStartKey = key;
+      lastStartAt = now;
+      setUrl(data.url);
+      setMode(format === 'audio' ? 'audio' : 'video');
+      setQuality(quality);
+      if (!startRef.current) {
+        if (data.requestId) notifyStartDownloadResult(data.requestId, false, '메인 화면이 아직 받을 준비가 되지 않았습니다.');
+        return;
+      }
+      startRef.current({
+        url: data.url,
+        format,
+        quality,
+        title: data.title,
+        author: data.author,
+        thumbnail: data.thumbnail,
+        duration: data.duration,
+      });
+      if (data.requestId) notifyStartDownloadResult(data.requestId, true);
+    };
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel(SEARCH_CHANNEL);
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'pick-url') takeUrl(event.data.url);
+        if (event.data?.type === 'start-download') startFromSearch(event.data);
+      };
+    } catch {
+      channel = null;
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'pick-url') takeUrl(event.data.url);
+      if (event.data?.type === 'start-download') startFromSearch(event.data);
+    };
+    window.addEventListener('message', onMessage);
+    return () => {
+      channel?.close();
+      window.removeEventListener('message', onMessage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const forceInstall = new URLSearchParams(window.location.search).get('install') === '1';
+    const deployed = isDeployedSite();
+    const applyInstall = (need: boolean) => {
+      queueMicrotask(() => {
+        setNeedsInstall(need);
+        setInstallOpen(need);
+      });
+    };
+    if (forceInstall || deployed) applyInstall(true);
+    else applyInstall(false);
     const controller = new AbortController();
     fetch(`${getApiBase()}/api/runtime`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
       .then((payload: RuntimeInfo | null) => {
-        if (payload) setRuntime(payload);
+        if (controller.signal.aborted) return;
+        const next = payload || { location: 'server' as const, location_label: '설치 필요' };
+        setRuntime(next);
+        if (forceInstall || deployed) {
+          setNeedsInstall(true);
+          setInstallOpen(true);
+          return;
+        }
+        setNeedsInstall(false);
+        setInstallOpen(false);
       })
-      .catch(() => {
-        setRuntime({ location: 'server', location_label: '서버' });
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setRuntime({ location: 'server', location_label: '설치 필요' });
+        if (forceInstall || deployed) {
+          setNeedsInstall(true);
+          setInstallOpen(true);
+        }
       });
     return () => controller.abort();
   }, []);
@@ -158,7 +263,7 @@ export default function Home() {
           return;
         }
         setMediaInfo(null);
-        setInspectError('서버에 연결할 수 없습니다. 내 PC 모드라면 시작하기.bat을 실행해 주세요.');
+        setInspectError('프로그램에 연결할 수 없습니다. 바탕화면의 SonicStream을 다시 눌러 주세요.');
       } finally {
         if (!controller.signal.aborted) {
           setInspecting(false);
@@ -180,114 +285,172 @@ export default function Home() {
     };
   }, []);
 
+  const qualityFromHistory = (item: DownloadHistoryItem): MediaQuality => {
+    if (item.type === 'audio') {
+      return isAudioQuality(item.quality) ? item.quality : '320k';
+    }
+    return isVideoQuality(item.quality) ? item.quality : 'best';
+  };
+
   const restoreHistoryItem = (item: DownloadHistoryItem) => {
     setMode(item.type === 'audio' ? 'audio' : 'video');
-    if (item.type === 'audio') {
-      setQuality(isAudioQuality(item.quality) ? item.quality : '320k');
-    } else {
-      setQuality(isVideoQuality(item.quality) ? item.quality : 'best');
-    }
+    setQuality(qualityFromHistory(item));
     setUrl(item.url);
   };
 
+  const redownloadHistoryItem = (item: DownloadHistoryItem) => {
+    restoreHistoryItem(item);
+    startRef.current?.({
+      url: item.url,
+      format: item.type,
+      quality: qualityFromHistory(item),
+    });
+  };
+
   return (
-    <main className="flex min-h-0 flex-1 flex-col px-3 py-3 sm:px-4">
-      <header className="mb-3 flex items-center justify-between gap-3">
-        <h1 className="text-lg font-semibold tracking-tight text-white">
-          Sonic<span className="text-cyan-400">Stream</span>
-        </h1>
-        <p className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-300">
-          {location === 'local' ? <Monitor className="h-3.5 w-3.5 text-cyan-300" /> : <Server className="h-3.5 w-3.5 text-zinc-400" />}
-          {location === 'local' ? '내 PC' : '서버'}
-        </p>
+    <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
+      <header className="mb-2 flex shrink-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h1 className="text-[length:var(--ss-title)] font-semibold tracking-tight text-white">
+            Sonic<span className="text-cyan-300">Stream</span>
+          </h1>
+          <ApiStatus />
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {needsInstall && (
+            <button
+              type="button"
+              onClick={() => {
+                setInstallOpen(true);
+                openInstallWindow();
+              }}
+              className="rounded-lg border border-cyan-500 bg-cyan-950 px-2.5 text-[length:var(--ss-button)] font-semibold text-cyan-100 hover:bg-cyan-900"
+            >
+              설치 안내
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => openHelpWindow()}
+            className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
+          >
+            <HelpCircle className="mr-1 inline h-4 w-4" />
+            사용 방법
+          </button>
+          <button
+            type="button"
+            onClick={() => persistLargeType(!largeType)}
+            className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
+          >
+            {largeType ? '기본 글씨' : '더 큰 글씨'}
+          </button>
+          <WindowControls />
+        </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,28%)_minmax(0,42%)_minmax(0,30%)] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-        <div className="order-2 min-h-[18rem] lg:order-1 lg:min-h-0">
+      {needsInstall && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {installOpen ? (
+            <p className="px-4 py-6 text-center text-[length:var(--ss-body)] leading-relaxed text-zinc-300">
+              이 사이트에서는 영상을 받지 않습니다. 설치 안내 창에서 프로그램을 받아 이 PC에 설치하세요.
+            </p>
+          ) : (
+            <InstallNeeded runtime={runtime} />
+          )}
+        </div>
+      )}
+      {installOpen && (
+        <InstallGuideWindow runtime={runtime} onClose={() => setInstallOpen(false)} />
+      )}
+
+      {!needsInstall && (
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,2.2fr)_minmax(0,1.5fr)] gap-2 overflow-hidden">
+        <div className="min-h-0 overflow-hidden">
           <PreviewPane
             media={mediaInfo}
             inspecting={inspecting}
             inspectError={inspectError}
             sourceUrl={url.trim()}
+            onPickUrl={setUrl}
           />
         </div>
 
-        <section className="order-1 flex min-h-0 flex-col rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 lg:order-2">
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">다운로드 작업</h2>
-          <div className="mb-3 flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-2 py-1.5">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 p-3">
+          <h2 className="mb-2 shrink-0 font-semibold text-zinc-200">다운로드 작업</h2>
+          <div className="mb-2 flex shrink-0 items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-950 px-2">
             <input
               ref={inputRef}
               type="text"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="동영상 링크를 붙여넣으세요"
-              className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent px-2 text-[length:var(--ss-body)] text-zinc-100 placeholder-zinc-400 focus:outline-none"
             />
             <button
               type="button"
               onClick={() => void handlePaste()}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-800 px-2.5 py-2 text-xs text-zinc-200 hover:bg-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-700 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
             >
-              <Clipboard className="h-3.5 w-3.5" />
+              <Clipboard className="h-4 w-4" />
               {pasteButtonLabel}
             </button>
           </div>
 
-          <div className="mb-3 grid grid-cols-3 gap-1 rounded-xl bg-zinc-950 p-1">
+          <div className="mb-2 grid shrink-0 grid-cols-3 gap-1 rounded-lg bg-zinc-950 p-1">
             <button
               type="button"
               onClick={() => { setMode('video'); if (!isVideoQuality(quality)) setQuality('best'); }}
-              className={`flex items-center justify-center gap-1 rounded-lg py-2 text-[11px] font-medium ${
-                mode === 'video' ? 'bg-zinc-800 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
+              className={`flex min-h-[var(--ss-tap)] items-center justify-center gap-1.5 rounded-md px-1 text-[length:var(--ss-button)] font-medium ${
+                mode === 'video' ? 'bg-zinc-800 text-cyan-200' : 'text-zinc-300 hover:text-white'
               }`}
             >
-              <Video className="h-3.5 w-3.5" />
+              <Video className="h-4 w-4" />
               영상
             </button>
             <button
               type="button"
               onClick={() => { setMode('shorts'); if (!isVideoQuality(quality)) setQuality('best'); }}
-              className={`flex items-center justify-center gap-1 rounded-lg py-2 text-[11px] font-medium ${
-                mode === 'shorts' ? 'bg-zinc-800 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
+              className={`flex min-h-[var(--ss-tap)] items-center justify-center gap-1.5 rounded-md px-1 text-[length:var(--ss-button)] font-medium ${
+                mode === 'shorts' ? 'bg-zinc-800 text-cyan-200' : 'text-zinc-300 hover:text-white'
               }`}
             >
-              <Smartphone className="h-3.5 w-3.5" />
+              <Smartphone className="h-4 w-4" />
               세로·쇼츠
             </button>
             <button
               type="button"
               onClick={() => { setMode('audio'); if (!isAudioQuality(quality)) setQuality('320k'); }}
-              className={`flex items-center justify-center gap-1 rounded-lg py-2 text-[11px] font-medium ${
-                mode === 'audio' ? 'bg-zinc-800 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
+              className={`flex min-h-[var(--ss-tap)] items-center justify-center gap-1.5 rounded-md px-1 text-[length:var(--ss-button)] font-medium ${
+                mode === 'audio' ? 'bg-zinc-800 text-cyan-200' : 'text-zinc-300 hover:text-white'
               }`}
             >
-              <Music className="h-3.5 w-3.5" />
+              <Music className="h-4 w-4" />
               오디오
             </button>
           </div>
 
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs text-zinc-400">품질: {mode === 'audio' ? quality : quality === 'best' ? '원본 최고' : quality}</p>
+          <div className="mb-1.5 flex shrink-0 items-center justify-between">
+            <p className="text-[length:var(--ss-body)] text-zinc-200">품질: {mode === 'audio' ? quality : quality === 'best' ? '원본 최고' : quality}</p>
             <button
               type="button"
               onClick={() => setAdvanced((value) => !value)}
-              className="text-[11px] text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+              className="ss-link text-[length:var(--ss-body)] text-zinc-200 underline-offset-2 hover:text-white hover:underline"
             >
               {advanced ? '간단히' : '고급 설정'}
             </button>
           </div>
 
           {(advanced || mode === 'audio') && (
-            <div className="mb-3 flex flex-wrap gap-1.5">
+            <div className="mb-2 flex shrink-0 flex-wrap gap-1">
               {(mode === 'audio' ? AUDIO_QUALITIES : VIDEO_QUALITIES).map((value) => (
                 <button
                   key={value}
                   type="button"
                   onClick={() => setQuality(value)}
-                  className={`rounded-lg px-2.5 py-1 text-[11px] ${
+                  className={`rounded-lg px-2.5 text-[length:var(--ss-body)] ${
                     quality === value
-                      ? 'border border-cyan-500/40 bg-cyan-950/50 text-cyan-200'
-                      : 'border border-zinc-800 bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                      ? 'border border-cyan-400 bg-cyan-950 text-cyan-100'
+                      : 'border border-zinc-600 bg-zinc-800 text-zinc-200 hover:text-white'
                   }`}
                 >
                   {value === 'best' ? '원본 최고' : value === '320k' ? 'MP3 320k' : value === 'flac' ? 'FLAC' : value.toUpperCase()}
@@ -296,25 +459,39 @@ export default function Home() {
             </div>
           )}
 
-          <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
+          <p className="mb-2 shrink-0 text-[length:var(--ss-body)] leading-snug text-zinc-300">
             화면비는 원본을 유지합니다. 세로 영상을 가로로 늘리거나 자르지 않습니다.
-            {location === 'local' && runtime?.save_dir ? ` 저장 위치: ${runtime.save_dir}` : ''}
           </p>
 
-          <DownloadButton
-            url={url}
-            format={format}
-            quality={quality}
-            media={mediaInfo}
-            location={location}
-            localReady={location === 'local'}
-          />
+          <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+            <DesktopSettings
+              saveDir={runtime?.save_dir}
+              autostart={runtime?.autostart}
+              onRuntime={setRuntime}
+            />
+
+            <DownloadButton
+              url={url}
+              format={format}
+              quality={quality}
+              media={mediaInfo}
+              location="local"
+              localReady
+              saveDir={runtime?.save_dir}
+              startRef={startRef}
+            />
+          </div>
         </section>
 
-        <div className="order-3 min-h-[16rem] lg:col-span-2 xl:col-span-1 xl:min-h-0">
-          <HistoryPanel onRestore={restoreHistoryItem} />
+        <div className="min-h-0 overflow-hidden">
+          <HistoryPanel
+            onRestore={restoreHistoryItem}
+            onRedownload={redownloadHistoryItem}
+            localReady
+          />
         </div>
       </div>
+      )}
     </main>
   );
 }

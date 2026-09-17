@@ -1,8 +1,12 @@
 import type { NextConfig } from "next";
 
+const staticExport = process.env.SONICSTREAM_STATIC === "1";
+
 const nextConfig: NextConfig = {
+  output: staticExport ? "export" : undefined,
+  images: { unoptimized: true },
   async rewrites() {
-    if (process.env.NEXT_PUBLIC_API_URL) {
+    if (staticExport || process.env.NEXT_PUBLIC_API_URL) {
       return [];
     }
     const api = process.env.SONICSTREAM_API_PROXY || "http://127.0.0.1:8000";

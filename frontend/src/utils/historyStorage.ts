@@ -1,6 +1,8 @@
 import type { DownloadHistoryItem } from '@/types/history';
+import { getApiBase } from '@/lib/constants';
 
 export const HISTORY_STORAGE_KEY = 'sonicstream.history.v1';
+export const ACTIVE_JOBS_KEY = 'sonicstream.activeJobs.v1';
 const MAX_ITEMS = 30;
 
 type HistoryListener = (items: DownloadHistoryItem[]) => void;
@@ -35,7 +37,29 @@ export function loadHistory(): DownloadHistoryItem[] {
   }
 }
 
-export function persistHistory(items: DownloadHistoryItem[]): DownloadHistoryItem[] {
+function pushHistoryToPc(items: DownloadHistoryItem[]): void {
+  if (typeof window === 'undefined') return;
+  void fetch(`${getApiBase()}/api/local/history`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  }).catch(() => undefined);
+}
+
+export async function hydrateHistoryFromPc(): Promise<DownloadHistoryItem[]> {
+  try {
+    const response = await fetch(`${getApiBase()}/api/local/history`, { cache: 'no-store' });
+    if (!response.ok) return loadHistory();
+    const payload = (await response.json()) as { items?: DownloadHistoryItem[] };
+    const remote = (payload.items || []).filter(isHistoryItem);
+    if (!remote.length) return loadHistory();
+    return persistHistory(remote, false);
+  } catch {
+    return loadHistory();
+  }
+}
+
+export function persistHistory(items: DownloadHistoryItem[], syncRemote = true): DownloadHistoryItem[] {
   const next = items.slice(0, MAX_ITEMS);
   if (canUseStorage()) {
     try {
@@ -44,8 +68,42 @@ export function persistHistory(items: DownloadHistoryItem[]): DownloadHistoryIte
       // quota / private mode — keep in-memory result only
     }
   }
+  if (syncRemote) pushHistoryToPc(next);
   notify(next);
   return next;
+}
+
+export function persistActiveJob(jobId: string, historyId: string) {
+  if (!canUseStorage()) return;
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_JOBS_KEY);
+    const current = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    current[jobId] = historyId;
+    window.localStorage.setItem(ACTIVE_JOBS_KEY, JSON.stringify(current));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadActiveJobs(): Record<string, string> {
+  if (!canUseStorage()) return {};
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_JOBS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function clearActiveJob(jobId: string) {
+  if (!canUseStorage()) return;
+  try {
+    const current = loadActiveJobs();
+    delete current[jobId];
+    window.localStorage.setItem(ACTIVE_JOBS_KEY, JSON.stringify(current));
+  } catch {
+    // ignore
+  }
 }
 
 export function addHistoryItem(

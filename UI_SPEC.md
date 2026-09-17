@@ -1,211 +1,346 @@
-# UI/UX Specification: SonicStream
+# SonicStream UI Specification
 
-## 1. 디자인 원칙 & 토큰 (Tailwind CSS v4 기준)
+시각·창·상호작용의 정본이다. 메인 앱은 **한 페이지 3열**이다. 라우팅은 `/ai` `/help` `/install` 별도 창만 허용한다.
 
-- **테마:** 칠흑의 다크 모드 (Obsidian `#0B0C10`)를 캔버스로 사용하며, 고채도의 네온 시안(`#00F0FF`)과 인디고(`#6366F1`)로 액센트를 구성한다.
-- **원칙:** Tailwind CSS v4의 `@import "tailwindcss";` 환경을 준수하며, 임의의 유틸리티 클래스가 누락되지 않도록 인라인 스타일과 표준 색상 클래스(`zinc-950`, `cyan-400` 등)를 조합한다.
-- **현재 파일:** `frontend/src/app/globals.css`는 `@import "tailwindcss";` 한 줄만 있다. `DownloadButton`이 참조하는 `animate-shimmer`가 아직 없으므로 아래 `@theme` 블록을 **반드시** 추가한다.
-- **금지:** `tailwind.config.js` v3 문법으로 되돌리기, `@tailwind base/components/utilities` 구식 지시어, 광고 배너, 새 탭 리다이렉트 CTA.
+글자·버튼은 30대 중반 기준. 광고·저품질 칩 금지. 이 문서를 정리하려고 화면을 다시 바꾸지 않는다.
 
-### 1.1 `globals.css` 필수 토큰
+소스(tsx/css)를 바꾸면 설치 ZIP의 `ui/`가 달라져야 한다 (`PRD.md` §1).
+
+문서 기준: `PRD.md` §0.
+
+---
+
+## 1. 토큰
+
+`frontend/src/app/globals.css`
 
 ```css
-@import "tailwindcss";
-
 @theme {
   --color-obsidian: #0b0c10;
   --color-neon-cyan: #00f0ff;
   --color-accent-indigo: #6366f1;
-  --animate-shimmer: shimmer 1.4s linear infinite;
 }
-
-@keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+:root {
+  --ss-body: 14px;
+  --ss-title: 17px;
+  --ss-button: 14px;
+  --ss-tap: 36px;
 }
-
-html,
-body {
-  background-color: #0b0c10;
-  color: #f4f4f5;
+html.large-type {
+  --ss-body: 16px;
+  --ss-title: 20px;
+  --ss-button: 16px;
+  --ss-tap: 40px;
 }
 ```
 
-`layout.tsx`의 `<body>`는 `min-h-full flex flex-col bg-obsidian text-zinc-100 antialiased`를 유지/적용한다. 메타데이터 title은 `SonicStream`, description은 고품질 추출 한 줄 카피로 교체한다.
+- 본문 `text-[length:var(--ss-body)]`, 제목 `--ss-title`, 버튼 `--ss-button`.
+- 탭/입력 최소 높이 `--ss-tap`.
+- `html, body`: `overflow: hidden`, 배경 `#09090b`, 글자 `#f4f4f5`, `line-height: 1.4`.
+- 버튼·텍스트 입력 `min-height: var(--ss-tap)` (`.ss-link`, checkbox/radio 제외).
+- 다운로드 게이지: 시안→인디고→자홍. 완료 에메랄드. 오류 로즈.
+- `animate-shimmer`, `border-beam` 유지. `prefers-reduced-motion: reduce`면 거의 0.
 
-폰트는 기존 Geist / Geist Mono CSS variable을 사용한다. 메트릭(`MB/s`, `%`, ETA)은 `font-mono` 또는 Geist Mono.
+글자 크기: 오른쪽 위 「더 큰 글씨」 / 「기본 글씨」. `localStorage` `sonicstream.textSize.v1` = `'1'` ↔ `html.large-type`, `'0'`이면 기본. 초기 state는 `false`, 마운트 후 읽는다.
 
-### 1.2 색 사용 규칙
+아이콘: 헤더·탭 `h-4 w-4`, 돋보기 `h-8 w-8` 박스, 설치 CTA `h-6 w-6`, 음량 `h-5 w-5`.
 
-| 역할 | 토큰 / 클래스 | 용도 |
-| :--- | :--- | :--- |
-| Canvas | `#0B0C10` / `bg-obsidian` | 페이지 배경 |
-| Surface | `bg-zinc-900/80`, `border-zinc-800` | 입력 박스, 카드 |
-| Accent | `text-cyan-400`, `#00F0FF` | 로고 스팬, 아이콘, 활성 탭 |
-| Secondary accent | `indigo-500`, `#6366F1` | 게이지 그라디언트 중간 |
-| Gauge end | `fuchsia-500` | 게이지 우측 |
-| Success | `emerald-400` | completed 글로우/카피 |
-| Danger | `rose-400` | error 테두리/카피 |
-| Muted | `text-zinc-400`, `placeholder-zinc-500` | 보조 카피 |
+설치 안내·AI 키 안내는 메인 라우팅이 아니라 **오버레이**다.
+
+`layout.tsx`: `html`/`body`에 `suppressHydrationWarning`. body는 `flex h-dvh min-h-0 flex-col overflow-hidden`.
 
 ---
 
-## 2. 화면 구성 요소 (Screen Components)
+## 2. 창 목록과 작업표시줄
 
-단일 페이지. 라우팅/모달/사이드바를 추가하지 않는다. 기존 골격은 `frontend/src/app/page.tsx`를 확장한다.
+### 2.1 창
 
-### 2.1 Hero & Smart Input
+| 창 | URL | document.title | window.name | 목표 크기 | 여는 곳 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 메인 | `/` | `SonicStream` | `sonicstream-main` | 1280×800 | 바로가기, `open_main` |
+| AI | `/ai` 또는 `/ai?q=` | `SonicStream AI` | `sonicstream-ai` | 1220×840 | AI 검색, 키 `ready`\|`configured` |
+| 도움말 | `/help` | `SonicStream 도움말` | `sonicstream-help` | 560×640 | 「사용 방법」 |
+| 설치 | `/install` | `SonicStream 설치` | `sonicstream-install` | 640×760 | 배포 사이트, `?install=1` |
 
-- 배지: `Ultra-Clean Downloader` + `Sparkles` 아이콘. `bg-cyan-950/60 border border-cyan-500/30 text-cyan-400`.
-- 헤드라인: `Sonic` + `Stream`(`text-cyan-400`).
-- 서브카피: `복잡한 선택지 없이, 오직 최고 품질의 1080p/4K 영상과 320kbps 음원만 다운로드합니다.`
-- 입력 컨테이너: 반투명 블러 `w-full max-w-xl bg-zinc-900/80 border border-zinc-800 p-2 rounded-2xl shadow-2xl backdrop-blur-sm`.
-- 클립보드 원클릭 붙여넣기(`Clipboard` 아이콘 버튼): `navigator.clipboard.readText()`를 호출하여 링크를 즉시 반영한다. 권한 거부 시 짧은 안내.
-- **디바운스 600ms:** URL 입력 완료 감지 시 백그라운드에서 자동으로 `POST http://localhost:8000/api/inspect`를 호출한다. 길이 체크만으로 Unsplash 더미를 넣는 현재 로직은 제거한다.
-- URL이 비거나 디바운스 도중 바뀌면 이전 Inspect 요청 결과를 폐기한다 (`AbortController` 권장).
-- Inspect 실패 시 `MediaCard`를 숨기고 입력 하단 또는 버튼 `error`로 사유를 보여 준다. 페이지 전체를 죽이지 않는다.
+`window.open` features: `width,height,left,top,scrollbars=yes,resizable=yes,menubar=no,toolbar=no,location=no,status=no`.
 
-### 2.2 미디어 인스펙션 카드 (`MediaCard.tsx`)
+같은 `name`으로 다시 열면 그 창을 재사용한다.
 
-구현 파일은 이미 스펙에 가깝다. 동작을 고정한다.
+팝업이 막히면: 설치는 메인의 `InstallGuideWindow`로 같은 내용을 보여 우회한다. **AI/도움말은 `window.open`이 null이어도 대체 오버레이가 없다.**
 
-- 입력된 링크가 유효하고 Inspect가 성공했을 때만 렌더한다.
-- `Framer Motion`의 페이드인-슬라이드업 (`initial={{ opacity: 0, y: 15 }}` → `animate={{ opacity: 1, y: 0 }}`, duration 0.3s).
-- 16:9 고화질 썸네일 (`aspect-video`, `object-cover`).
-- 영상 길이 오버레이 배지: `absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] font-mono`.
-- 볼드 타이틀 `truncate` + `title={media.title}`로 긴 제목 툴팁.
-- 채널(`User` 아이콘) / 재생 시간(`Clock` 아이콘).
-- 카드 셸: `w-full max-w-xl bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 mb-6 backdrop-blur-md`.
+창 컨트롤 문구: 「최소화」, 「전체」, 「조절창」, 묶음 `aria-label="창 조절"`. AI에는 「메인 화면」.
 
-`MediaCard`에 네트워크 호출을 넣지 않는다. 데이터는 부모가 주입한다.
+### 2.2 원래 현상과 원인
 
-### 2.3 듀얼 세그먼트 포맷 & 품질 셀렉터
+구분:
 
-- 비디오(`MP4`) 탭과 오디오(`MP3`) 탭 전환. 활성 탭: `bg-zinc-800 text-cyan-400`.
-- 탭 전환 시 품질 기본값: video→`1080p`, audio→`320k`.
-- 포맷 선택에 따라 품질 칩 동적 전환:
-  - 비디오: `1080p FHD (표준)` vs `4K UHD (최고화질)`
-  - 오디오: `320kbps CBR (최고음질)` vs `FLAC (무손실)`
-- 활성 칩: `bg-cyan-500/20 text-cyan-300 border border-cyan-500/40`.
-- 저화질/저비트레이트 칩을 추가하지 않는다.
-- 탭 전환은 짧은 crossfade/layout animation을 허용하되 레이아웃 점프는 금지한다.
+| 현상 | 이 수정이 다루는가 |
+| :--- | :--- |
+| 창 **하단**이 작업표시줄 뒤로 가려짐 (AI 입력칸) | 예. 주 대상 |
+| 창 크기·위치가 작업 영역을 벗어남 | 예. 같은 원인 |
+| 메인 창이 다른 창 **뒤**로 숨음 | 별도. `open_main` ForceFront |
+| 최소화·최대화·복원 후 위치가 잘못됨 | 부분. 복원은 작업 영역 박스, 최대화는 작업 영역 |
+| 세션을 넘어 창 위치를 기억 | 없음 |
 
-상태 모델 (`page.tsx`):
+조건: 작업표시줄이 아래에 고정되어 있거나, 자동 숨김이 켜져 `availHeight == screen.height`인데 상태바가 나타날 때. 고정 높이 840/800과 `moveTo(0,0)`+전체화면이 작업 영역을 무시하면 입력칸이 가려진다.
 
-```ts
-url: string
-format: 'video' | 'audio'
-quality: '1080p' | '4k' | '320k' | 'flac'
-mediaInfo: { title, author, duration, thumbnail } | null
-inspectError?: string | null
-```
+원인이 아닌 것: 페이지 CSS만의 문제. `h-dvh`는 창이 작업 영역 안에 있을 때 맞다. 창 자체가 상태바 아래로 내려가면 입력칸이 가려진다.
 
-### 2.4 버튼-투-게이지 모핑 (`DownloadButton.tsx`) 상태 머신
+### 2.3 위치·크기 규칙 (코드 값)
 
-버튼은 `w-full max-w-xl h-14 rounded-2xl` 고정 높이다. 상태 전환에서 높이/폭이 바뀌면 안 된다 (CLS 금지, 60fps).
+상수 (`workArea.ts` / `desktop.py` / `run-desktop.ps1`):
 
-현재 코드는 `idle | inspecting | downloading | completed`와 mock interval만 있다. **`processing`과 `error`를 추가**하고 mock 타이머를 전부 제거한다.
+| 이름 | 값 |
+| :--- | :--- |
+| `OPEN_PAD` / `WINDOW_PAD` | 16 |
+| `TASKBAR_FALLBACK` | 48 |
+| `WINDOW_CHROME_H` (새 `--app` 창만) | 48 |
+| 선호 위치 | left+80, top+40 (영역 안에 남을 때만) |
+| 메인 목표 | 1280×800 |
+| AI 목표 | 1220×840 |
 
-| 상태 (Status) | 시각적 표현 및 애니메이션 | 메트릭 표기 |
-| :--- | :--- | :--- |
-| **`idle`** | 짙은 Zinc 배경 + 테두리 호버 효과 | `[⬇ 비디오 다운로드 (1080P)]` • `~128 MB` |
-| **`inspecting`** | 버튼 비활성화, 스피너 회전 애니메이션 | `"최적 고화질 스트림 분석 중..."` |
-| **`downloading`** | 버튼 내부에서 시안-인디고-자홍 그라디언트 바가 실시간 퍼센트로 차오름 (쉬머 하이라이트) | `"다운로드 중..."` • `4.8 MB/s` • `ETA: 6s` • `68%` |
-| **`processing`** | 바가 95% 지점에 고정되며 펄스 인디케이터 동작 | `"FFmpeg 패키징 및 태그 주입 중..."` |
-| **`completed`** | 에메랄드 그린(`emerald-400`) 글로우와 함께 체크마크(`✓`) 표기 | `"✓ 다운로드 완료!"` (3초 후 idle 복귀) |
-| **`error`** | 로즈 레드(`rose-400`) 테두리 및 에러 메시지 노출 | `"다운로드 실패 (재시도)"` |
+작업 영역:
 
-#### idle
+1. 프론트: `screen.availLeft/Top/Width/Height`.
+2. 백엔드/런처: `SystemParametersInfoW(0x0030)` (`SPI_GETWORKAREA`).
+3. 높이가 화면 전체와 같으면(자동 숨김) **높이에서 48을 뺀다**. 이미 상태바만큼 줄어 있으면 더 빼지 않는다.
+4. 연 창은 작업 영역 − pad 16 안에 맞춤. 목표보다 영역이 작으면 줄인다.
 
-- 좌측: `Download` 아이콘 + `비디오 다운로드 (1080P)` 또는 `음원 추출 (320K)`.
-- 우측 예상 용량(가이드): video `1080p` → `~128 MB`, video `4k` → `~420 MB`, audio `320k` → `~9.5 MB`, audio `flac` → `~28 MB`.
-- 호버: `hover:border-zinc-500`.
-- URL이 비어 있으면 클릭 시 알림/인라인 경고. 네트워크 호출 없음.
+적용 범위:
 
-#### inspecting
+| 창 | 열 때 fit+200ms clamp | 마운트 clamp (즉시+80ms) | 패키지 최초 `--app` 박스 |
+| :--- | :--- | :--- | :--- |
+| 메인 | 브라우저 fallback | 있음 | 있음 |
+| AI | 있음 | 있음 | 없음 (팝업) |
+| 도움말 | 있음 | 없음 | 없음 |
+| 설치 | 있음 | 없음 | 없음 |
 
-- 다운로드 직후 서버가 job을 받기 전, 또는 명시적 분석 단계.
-- `Loader2` `animate-spin` + `최적 고화질 스트림 분석 중...` / `최적 고화질 스트림 파싱 중...` 중 하나로 통일. **권장 카피:** `최적 고화질 스트림 분석 중...`
-- 버튼 `disabled`.
+최대화(「전체」): 프론트 `fillWorkArea()` = 작업 영역 전체(패드 없음). 백엔드 `ShowWindow(SW_MAXIMIZE=3)`.
 
-#### downloading
+최소화: 백엔드만 `ShowWindow(6)`.
 
-- Fill: `bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 opacity-80`.
-- width는 SSE `percent`에 `easeOut` 0.2s. `Math.min(percent, 100)`.
-- 쉬머: `from-transparent via-white/20 to-transparent animate-shimmer`. 부모 `overflow-hidden`.
-- HUD: ping 닷 + `다운로드 중...` + `{speed} • ETA: {n}s` + `{n}%`.
-- 속도/ETA는 목업 문자열(`4.8 MB/s` 하드코딩)을 쓰지 않고 SSE 값을 그대로 표시한다.
+복원(「조절창」): 프론트 `fitWindowInWorkArea(1280,800)`. 백엔드 `ShowWindow(9)` 후 `SetWindowPos`를 작업 영역 박스로.
 
-#### processing
+화면 밖 복구: 메인/AI 마운트와 팝업 200ms clamp뿐. 드래그 후 지속 감시 없음. 위치 저장 없음.
 
-- 바 width **95% 고정**, 약한 pulse (`animate-pulse` 또는 닷 ping).
-- 카피: 비디오 `"FFmpeg 패키징 및 태그 주입 중..."`, 오디오 `"최고 음질 변환 및 앨범 아트 임베딩 중..."`. 서버 `detail`이 있으면 서버 문구 우선.
+포커스: `open_main`은 순간 TOPMOST 후 즉시 해제. 항상 위 고정 아님.
 
-#### completed
+없는 처리: 다중 모니터 지정, 배율 전용 분기, IME 바 높이 별도 계산.
 
-- `text-emerald-400`, `Check` 아이콘, `✓ 다운로드 완료!`
-- 버튼/카드에 emerald 글로우 (`shadow-[0_0_24px_rgba(52,211,153,0.35)]` 수준).
-- **3초 후** `idle`, progress 0. 기존 코드의 4초는 3초로 맞춘다.
-- complete 이벤트에서 hidden `<a>`로 `download_url`을 즉시 친다.
+### 2.4 확인 / 미확인
 
-#### error
+- 코드 확인: 위 상수·함수. `fit_window_in_area` unittest (1920×1040 → 80,40,1280,800; 1280×720에 1280×840 → 16,16,1248,688).
+- 개발 UI: `/`와 `/ai` 로드, AI 검색이 `/ai` 창을 염. Cursor 내장 브라우저의 `availHeight`는 1080으로 잡혀 자동숨김 fallback(−48)이 적용되는 것을 계산으로 확인.
+- **미실시:** 실제 Windows 작업표시줄 고정/자동숨김, 125%/150% 배율, 다중 모니터, 패키지 `--app` 창의 이번 수정분.
 
-- `border-rose-400`, `text-rose-400`.
-- 기본 카피 `다운로드 실패 (재시도)`. `message`가 있으면 짧게 함께 표시.
-- 클릭 시 동일 url/type/quality로 재시도. disabled 아님.
-
-### 2.5 모션 규칙
-
-- `framer-motion` `AnimatePresence mode="wait"`로 라벨만 교체. 버튼 박스 자체는 리마운트하지 않는다.
-- 게이지 width만 애니메이션. 레이아웃 속성(height, margin) 애니메이션 금지.
-- 목표 60fps. 매 SSE 틱마다 전체 트리를 리렌더하지 말고 progress 숫자 상태만 갱신.
+구현 파일: `ARCHITECTURE.md` §9.
 
 ---
 
-## 3. 프론트 네트워크 시퀀스
+## 3. 메인 (`/`) — 3열
+
+뷰포트 높이 100%, 열 내부만 스크롤. 페이지 전체 스크롤바를 늘리지 않는다.
+
+셸: `px-3 py-2`. 그리드:
 
 ```text
-page.tsx
-  url change → 600ms debounce → POST /api/inspect → setMediaInfo | inspectError
-
-DownloadButton
-  click
-    → set inspecting
-    → POST /api/download { url, type: format, quality }
-    → job_id
-    → EventSource(GET /api/progress/{job_id})
-        progress    → downloading + percent/speed/eta
-        processing  → processing + detail
-        complete    → <a>.click(download_url) → completed → 3s → idle
-        error       → error (retryable)
+grid-cols-[minmax(0,1.3fr)_minmax(0,2.2fr)_minmax(0,1.5fr)] gap-2
 ```
 
-- EventSource는 `http://localhost:8000/api/progress/{job_id}`.
-- complete/error/unmount에서 `es.close()`.
-- CORS 실패는 error 상태로 보여 주고 콘솔에만 남기지 않는다.
+고정: 헤더, 검색 폼, URL 줄, 모드 탭, 품질 줄, 안내 한 줄. 늘어남: 왼쪽 결과/미리보기 스크롤, 가운데 설정 스크롤(`overflow-y-auto`), 오른쪽 이력 리스트.
+
+\\	ext
++---------------------------------------------------------------+
+| SonicStream · API 상태 · 사용 방법 · 더 큰 글씨 · 창 버튼     |
++------------------+--------------------+-----------------------+
+| 선택한 영상      | 다운로드 작업      | 다운로드 이력         |
+| PreviewPane      | CTA + 설정         | HistoryPanel          |
++------------------+--------------------+-----------------------+
+\
+헤더 버튼: 「사용 방법」, 「더 큰 글씨」/「기본 글씨」, 배포일 때만 「설치 안내」.
+
+긴 제목: 카드에서 truncate. 저장 경로는 설정에 한 줄. 툴팁은 제목 truncate에 의존(별도 title 속성을 모든 곳에 두지 않음).
+
+### 3.1 왼쪽 PreviewPane
+
+검색 폼:
+
+```text
+┌─────────────────────────────┐  ┌─────────┐
+│ [검색어 입력        ] [🔍] │  │ AI 검색 │
+└─────────────────────────────┘  └─────────┘
+```
+
+- 입력과 돋보기는 **한 박스**. 돋보기 맨 오른쪽 `h-8 w-8`. `absolute top-1/2` 금지.
+- 돋보기 `type="submit"` `aria-label="일반 검색"`.
+- 입력 placeholder: 「찾고 싶은 영상을 말해 보세요」
+- 「AI 검색」은 박스 밖 `type="button"`.
+
+| 입력 | 결과 |
+| :--- | :--- |
+| Enter / 돋보기 | `POST /api/search`, 왼쪽 12건. 창 안 염 |
+| 카드 클릭 | URL 세팅, Inspect. 검색 리스트에서 선택 영상으로 전환 |
+| AI 검색, 키 없음 | 안내 제목 「AI 검색을 쓸 수 없습니다」. 확인 → 닫힘. `/ai` 금지 |
+| AI 검색, `ready`\|`configured` | `openAiChatWindow`. **빈 칸이어도** `/ai` |
+
+빈 상태: 「주소를 넣거나 돋보기로 찾아 보세요.」
+검색 중: 「영상을 찾는 중...」
+Inspect 중: 「영상 정보를 확인하는 중...」
+검색 0건: 「찾은 영상이 없습니다. 다른 말로 다시 찾아 보세요.」
+길이: 「정보 없음」, 「확인 중」, 「재생 시간: …」
+미리보기 주석: 「미리보기입니다. 제목 조회 성공은 다운로드 가능을 의미하지 않습니다.」
+링크: 「원본 페이지 열기」
+
+그 아래: URL 칸은 가운데 열. 왼쪽은 MediaCard(16:9, truncate 제목, 채널, 길이). 검색 카드에 조회수.
+
+### 3.2 가운데 다운로드
+
+URL placeholder: 「동영상 링크를 붙여넣으세요」
+붙여넣기 버튼: 「붙여넣기」. 실패 시 「Ctrl+V를 눌러주세요」 또는 「길게 눌러 붙여넣기」(2초 후 복귀).
+
+모드: 「영상」 | 「세로·쇼츠」 | 「오디오」. 쇼츠는 화면 분류. 받기는 video/audio.
+
+품질 기본: 영상 `best`(표시 「원본 최고」), 오디오 `320k`(「MP3 320k」). 칩: 원본 최고, 720P, 1080P, 4K, MP3 320k, FLAC. 「고급 설정」/「간단히」. 오디오는 칩을 바로 보여 줌.
+
+안내: 「화면비는 원본을 유지합니다. 세로 영상을 가로로 늘리거나 자르지 않습니다.」
+
+제목: 「다운로드 작업」. 「품질: …」
+
+CTA 상태 (레이아웃 시프트 없이 내부만):
+
+| 상태 | 문구 |
+| :--- | :--- |
+| idle | `다운로드 (원본 최고)` 등. 대기 「준비되면 진행 상태가 여기에 고정되어 표시됩니다.」 |
+| 연결 | 「연결 중...」 / 「연결 중 / 영상 확인 중...」 |
+| 받는 중 | 「받는 중...」 + % / 속도 / ETA |
+| 대기열 | 「대기열에서 순서를 기다리는 중...」 |
+| 재시도 | 「다른 방식으로 다시 준비하는 중...」 |
+| 후처리 | 「파일을 정리하는 중...」 |
+| 저장됨 | 「다운로드가 완료되었습니다.」 파일/크기/저장 위치. 열기 버튼 |
+| 브라우저 저장 | 「저장은 시작됐습니다. 저장 폴더에서 파일이 끝났는지 확인해 주세요.」 |
+| 취소 | 「다운로드를 취소했습니다.」 버튼 「취소」 |
+| 오류 | 로즈 + 사유. 「다시 시도」 |
+
+오류 예: 「먼저 동영상 링크를 입력해 주세요.」, 「서버에 연결할 수 없습니다.」, 「서버 연결이 끊어졌습니다. 다시 시도해 주세요.」, 「작업을 찾을 수 없습니다. 엔진이 다시 시작된 것 같습니다.」, 「파일이 완료 조건을 통과하지 못했습니다.」
+
+저장 완료 UI 조건: `delivery === 'local_file'` && `saved_path` && `verified === true`. 상태 확인 실패와 실제 검증 실패를 구분한다.
+
+`LocalFileActions`: 「동영상 열기」/「오디오 열기」, 「저장 폴더 열기」, 「경로 복사」. 실패 「파일을 찾을 수 없습니다.」 등. 성공 「경로를 복사했습니다.」
+
+`DesktopSettings`: 「저장 폴더」, 기본 표시 「기본 폴더: 다운로드\SonicStream」, 「폴더 바꾸기」, 「폴더 열기」, 「켜질 때 같이 시작」, 「프로그램 종료」(확인: 「SonicStream을 종료할까요? 받은 파일은 그대로 있습니다.」), 「AI 연결」, 「OpenAI API 키를 이 컴퓨터에 넣으면 AI 검색을 쓸 수 있습니다.」, placeholder 「sk-로 시작하는 키」, 「저장하고 연결」(값은 다시 찍지 않음).
+
+`ApiStatus`: 8초마다 `/api/status`. 「프로그램 연결됨」/「프로그램 연결 끊김」, 「AI 키 저장됨」 등 서버 라벨. 끊김 기본 「AI 연결 끊김」. OpenAI 점은 `hasSavedOpenaiKey`.
+
+Inspect 실패(페이지): 「영상을 분석할 수 없습니다.」, 「프로그램에 연결할 수 없습니다. 바탕화면의 SonicStream을 다시 눌러 주세요.」
+
+### 3.3 오른쪽 기록
+
+- 제목 「다운로드 이력」, 「이력만 비우기」
+- 검색 「제목 또는 주소 검색」
+- 필터: 「전체」, 「진행 중」, 「다운로드 시작됨」, 「저장됨」, 「실패」. 취소 전용 칩 없음
+- 빈 상태: 「이 브라우저에만 이력이 남습니다. 이력 삭제는 저장된 파일을 지우지 않습니다.」 (실제로는 PC `history.json`도 hydrate한다. 카피는 그대로)
+- 행: 「다시 다운로드」, 「주소만 불러오기」, 「이력 삭제」
+- 위치 접미: 「 · 이 PC」 / 「 · 이전 서버 기록」
+- 시각: 방금 / N분 전 / N시간 전 / N일 전
+- 마운트 전 items=`[]`. `useEffect`에서 `loadHistory` + `hydrateHistoryFromPc`
+- 최대 30
 
 ---
 
-## 4. 카피 인벤토리 (ko)
+## 4. AI 창 (`/ai`)
 
-| 위치 | 문구 |
-| :--- | :--- |
-| Hero badge | Ultra-Clean Downloader |
-| Hero title | SonicStream |
-| Hero sub | 복잡한 선택지 없이, 오직 최고 품질의 1080p/4K 영상과 320kbps 음원만 다운로드합니다. |
-| Input placeholder | 동영상 링크를 붙여넣으세요 (예: YouTube URL) |
-| Paste | 붙여넣기 |
-| Tab video | 비디오 (MP4) |
-| Tab audio | 오디오 (MP3) |
-| Quality | 1080p FHD (표준) / 4K UHD (최고화질) / 320kbps CBR (최고음질) / FLAC (무손실) |
-| Idle video | 비디오 다운로드 ({QUALITY}) |
-| Idle audio | 음원 추출 ({QUALITY}) |
-| Inspecting | 최적 고화질 스트림 분석 중... |
-| Downloading | 다운로드 중... |
-| Processing video | FFmpeg 패키징 및 태그 주입 중... |
-| Processing audio | 최고 음질 변환 및 앨범 아트 임베딩 중... |
-| Completed | ✓ 다운로드 완료! |
-| Error | 다운로드 실패 (재시도) |
-| Empty URL | 먼저 동영상 링크를 입력해 주세요! |
+2열: `grid-cols-[minmax(0,42%)_minmax(0,58%)]`. 왼쪽 대화, 오른쪽 결과.
 
-이 문서가 시각·카피·상태 머신의 단일 소스다. API 필드와 yt-dlp 옵션은 `ARCHITECTURE.md`를 따른다.
+헤더: 「SonicStream」 작은 라벨, 제목 「AI 검색 대화」, ApiStatus, 「메인 화면」, 창 버튼.
+
+빈 대화 예: 「예: 비 오는 날 듣기 좋은 전유진 노래, 아이와 같이 볼 수 있는 짧은 동요」
+입력 placeholder: 「찾고 싶은 영상을 말해 주세요」
+보내기: 「보내기」(빈 칸이면 disabled). 진행 「이야기를 읽고 영상을 고르는 중...」
+오른쪽 빈: 「대화를 보내면 찾은 영상이 여기에 모입니다.」 제목 「검색 결과」
+결과 카드: 「바로보기」, 「1080p」, 「MP3」
+다운로드 ACK 성공: 「원래 창에서 받기를 시작했습니다.」
+실패: 「메인 창이 받기를 시작하지 못했습니다. 메인 화면을 연 뒤 다시 눌러 주세요.」
+유튜브 더보기: 「여기까지가 이 프로그램에서 찾은 결과입니다. …」 버튼 「유튜브에서 더 찾기」(새 탭)
+
+입력은 아래 고정. 대화만 스크롤. Enter 전송(구현: 보내기 버튼/폼). Shift+Enter 줄바꿈은 한 줄 input이면 해당 없음(현재 단일 입력).
+
+페이지 자체에는 키 가드가 없다.
+
+로드맵 자리만 비움: 요약, 장면. 가짜 버튼 없음.
+
+---
+
+## 5. 도움말 (`/help`)
+
+제목 「사용 방법」, 「닫기」, 창 버튼. 본문 `HelpGuide`:
+
+- 「이렇게 사용하세요」
+- 1 바탕화면 SonicStream. 검은 창을 계속 열 필요 없음
+- 2 붙여넣기 / 돋보기 / AI
+- 3 영상 / 세로·쇼츠 / 오디오 후 다운로드
+- 4 동영상 열기 또는 저장 폴더 열기
+- 폴더 바꾸기, 지워도 파일은 남음
+- AI는 가운데 키 + 「저장하고 연결」
+- 「더 큰 글씨」
+
+마운트 시 큰 글씨 클래스만 적용. 작업 영역 clamp는 열 때만.
+
+---
+
+## 6. 설치 안내
+
+배포 사이트:
+
+- 마운트 후 `needsInstall=true`. 첫 페인트는 메인 껍데기(초기 false).
+- 카피: 「이 사이트에서는 영상을 받지 않습니다. …」
+- 동의 체크: 「이 컴퓨터에 SonicStream을 설치하는 데 동의합니다. 받은 영상은 내 PC에 저장됩니다.」
+- 테스트 배너: 「Windows 테스트 버전」과 빌드 식별자 앞 12자
+- 「Windows 테스트 버전 다운로드」 → GitHub 사전 릴리스 ZIP (`windows-test`). localhost/로컬 경로 금지
+- 「동의하고 설치하기」 → `SonicStream-설치.bat` (배포 사이트에서는 같은 테스트 ZIP URL)
+- 오버레이 + 가능하면 `/install` 창. 오버레이 「새 창으로」, 「닫기」
+- 창이 열리면 메인은 「이 사이트에서는 영상을 받지 않습니다. 설치 안내 창에서 …」
+
+루프백: 자동 안내 없음. `?install=1`만. `/api/status` 실패를 안내 조건으로 쓰지 않음.
+
+설치 창 제목 「설치 안내」. 3열 복제 없음.
+
+---
+
+## 7. 바로보기·대본
+
+- iframe 크기 명시, 16:9. nocookie 호스트. `youtube.com/embed`+origin 금지.
+- 기본 음량 **80**. 키 `sonicstream.watchVolume.v1`. 0 저장 유지. 음소거 해제는 현재>0 ? 현재 : lastAudible || 80.
+- 표시: 음소거면 슬라이더/숫자 0. aria 「소리 켜기」/「소리 끄기」, 「소리 크기」
+- 준비 실패(12초): 「미리보기를 준비하지 못했습니다. 원본 페이지에서 확인해 주세요.」
+- 영상 전환: 새 id로 cue/load. 대본은 URL이 바뀌면 다시 요청.
+- 대본 버튼 「대본」. 로딩 「대본을 읽는 중...」. 언어 「한글」「영어」「자동 …」. 「복사」/「복사됨」(1.6초)
+- 줄 없음: 「이 영상은 대본이 없습니다.」
+- 요청 실패: 「대본을 가져오지 못했습니다.」 또는 서버 메시지
+- 줄 클릭 `seekTo`
+
+---
+
+## 8. 모션·입력
+
+- 버튼→게이지: width 유지.
+- 완료 짧은 확인음/`celebrate`. 광고성 폭죽 금지.
+- 복사: Clipboard API. 실패해도 행으로 만들지 않음.
+- 검색 submit, AI는 type=button.
+- 포커스링 zinc/cyan.
+- 새로고침: 이력은 localStorage+hydrate. 진행 중 job은 `activeJobs`로 이어서 본다. 엔진이 재시작돼 job이 없으면 「작업을 찾을 수 없습니다. 엔진이 다시 시작된 것 같습니다.」
+
+---
+
+## 9. 하지 말 것 (회귀)
+
+- 메인에 다중 page 전환.
+- 검색 돋보기를 input 위/아래 absolute로 재배치.
+- 키 없이 AI 버튼으로 `/ai`를 염.
+- `ready`/`configured`인데 빈 쿼리라서 AI 창을 안 염.
+- 배포 사이트에서 localhost:8000 다운로드.
+- 루프백에서 설치 안내 기본 오픈.
+- youtube.com/embed + Origin.
+- 결과 12건을 CSS만 늘리고 API 상한은 10.
+- 창을 `moveTo(0,0)` + `screen.height`로 다시 열어 상태바 아래로 밀어 넣음.
+- 설치 ZIP의 옛 `ui/` 배포.
+- 토큰 14/17/14/36 ↔ 16/20/16/40 을 문서 정리 이유로 변경.
