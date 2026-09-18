@@ -36,10 +36,10 @@ describe('development PC gate', () => {
     );
   });
 
-  it('opens the local program from a public host and stays on-origin on loopback', () => {
+  it('always opens the main screen on the same origin', () => {
     assert.equal(
       localMainScreenUrl('https://sonic-stream-teal.vercel.app', 'sonic-stream-teal.vercel.app'),
-      'http://127.0.0.1:3000/',
+      'https://sonic-stream-teal.vercel.app/',
     );
     assert.equal(localMainScreenUrl('http://127.0.0.1:3000', '127.0.0.1'), 'http://127.0.0.1:3000/');
   });

@@ -47,10 +47,7 @@ export function resolveShowDevMainButton(input: {
 }
 
 export function localMainScreenUrl(origin: string, hostname: string): string {
-  if (isLoopbackHost(hostname)) {
-    return `${origin.replace(/\/$/, '')}/`;
-  }
-  return LOCAL_MAIN_SCREEN_URL;
+  return `${origin.replace(/\/$/, '')}/`;
 }
 
 function readStoredFlag(): string | null {
