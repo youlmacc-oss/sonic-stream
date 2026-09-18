@@ -4,12 +4,24 @@ import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import InstallNeeded from '@/components/InstallNeeded';
 import WindowControls from '@/components/WindowControls';
 import { getApiBase, type RuntimeInfo } from '@/lib/constants';
-import { getAppShell, getServerAppShell, subscribeAppShell } from '@/lib/appShell';
+import {
+  getAppShell,
+  getServerAppShell,
+  getServerShowDevMainButton,
+  getShowDevMainButton,
+  openLocalMainScreen,
+  subscribeAppShell,
+} from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType } from '@/utils/textSize';
 
 export default function InstallPage() {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const shell = useSyncExternalStore(subscribeAppShell, getAppShell, getServerAppShell);
+  const showDevMain = useSyncExternalStore(
+    subscribeAppShell,
+    getShowDevMainButton,
+    getServerShowDevMainButton,
+  );
   const local = shell === 'local';
 
   useEffect(() => {
@@ -33,6 +45,15 @@ export default function InstallPage() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-[length:var(--ss-title)] font-semibold text-white">설치 안내</h1>
         <div className="flex items-center gap-1.5">
+          {showDevMain && (
+            <button
+              type="button"
+              onClick={() => openLocalMainScreen()}
+              className="rounded-lg border border-cyan-500 bg-cyan-950 px-2.5 text-[length:var(--ss-button)] font-semibold text-cyan-100 hover:bg-cyan-900"
+            >
+              메인 화면
+            </button>
+          )}
           {local && <WindowControls />}
           <button
             type="button"

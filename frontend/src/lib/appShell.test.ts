@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { getServerAppShell, resolveAppShell } from './appShell';
+import { getServerAppShell, getServerShowDevMainButton, isDevPcHost, resolveAppShell } from './appShell';
 
 describe('app shell', () => {
   it('keeps a stable boot snapshot for the first server render', () => {
@@ -19,5 +19,13 @@ describe('app shell', () => {
     assert.equal(resolveAppShell('localhost'), 'local');
     assert.equal(resolveAppShell('::1'), 'local');
     assert.equal(resolveAppShell('[::1]'), 'local');
+  });
+
+  it('shows the main-screen button only on the development PC host', () => {
+    assert.equal(getServerShowDevMainButton(), false);
+    assert.equal(isDevPcHost('127.0.0.1'), true);
+    assert.equal(isDevPcHost('localhost'), true);
+    assert.equal(isDevPcHost('::1'), true);
+    assert.equal(isDevPcHost('sonic-stream-teal.vercel.app'), false);
   });
 });

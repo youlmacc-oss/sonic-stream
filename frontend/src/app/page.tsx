@@ -20,7 +20,14 @@ import {
 import type { DownloadHistoryItem } from '@/types/history';
 import { SEARCH_CHANNEL, notifyStartDownloadResult, openHelpWindow } from '@/lib/searchWindow';
 import { keepCurrentWindowAboveTaskbar } from '@/lib/workArea';
-import { getAppShell, getServerAppShell, subscribeAppShell } from '@/lib/appShell';
+import {
+  getAppShell,
+  getServerAppShell,
+  getServerShowDevMainButton,
+  getShowDevMainButton,
+  openLocalMainScreen,
+  subscribeAppShell,
+} from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType, persistLargeType, subscribeLargeType } from '@/utils/textSize';
 
 const VIDEO_QUALITIES: MediaQuality[] = ['best', '720p', '1080p', '4k'];
@@ -37,9 +44,11 @@ function isAudioQuality(value: string): value is MediaQuality {
 function AppHeader({
   largeType,
   local,
+  showDevMain = false,
 }: {
   largeType: boolean;
   local: boolean;
+  showDevMain?: boolean;
 }) {
   return (
     <header className="mb-2 flex shrink-0 items-center justify-between gap-2">
@@ -50,6 +59,15 @@ function AppHeader({
         {local && <ApiStatus />}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
+        {showDevMain && (
+          <button
+            type="button"
+            onClick={() => openLocalMainScreen()}
+            className="rounded-lg border border-cyan-500 bg-cyan-950 px-2.5 text-[length:var(--ss-button)] font-semibold text-cyan-100 hover:bg-cyan-900"
+          >
+            메인 화면
+          </button>
+        )}
         <button
           type="button"
           onClick={() => openHelpWindow()}
@@ -85,9 +103,14 @@ function BootScreen({ largeType }: { largeType: boolean }) {
 }
 
 function PublicInstallScreen({ largeType }: { largeType: boolean }) {
+  const showDevMain = useSyncExternalStore(
+    subscribeAppShell,
+    getShowDevMainButton,
+    getServerShowDevMainButton,
+  );
   return (
     <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
-      <AppHeader largeType={largeType} local={false} />
+      <AppHeader largeType={largeType} local={false} showDevMain={showDevMain} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <InstallNeeded />
       </div>
