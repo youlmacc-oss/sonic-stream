@@ -1,171 +1,302 @@
-# PRD: SonicStream (소닉스트림)
+# SonicStream Product Requirements Document
 
-## 1. 프로젝트 개요 (Executive Summary)
+이 문서는 **현재 워킹 트리에 구현된 제품**의 사용자 관점 정본이다. 구조·API는 `ARCHITECTURE.md`, 화면·문구·창은 `UI_SPEC.md`, 복원·설치·시험은 `YOUTUBE_OPS.md`를 본다.
 
-SonicStream은 복잡하고 불필요한 저화질/저음질 규격을 과감히 배제하고, **1080p FHD / 4K UHD 비디오와 320kbps MP3 / FLAC 무손실 음원**이라는 표준 이상의 고품질 미디어 추출에만 집중하는 상업용 수준의 미니멀 웹 유틸리티 서비스다.
-
-광고, 가짜 다운로드 유도 버튼, 복잡한 포맷 옵션을 완전히 걷어내고, 링크 입력부터 다운로드 완료까지 버튼 내부에서 실시간 진행 상황이 펼쳐지는 **버튼-투-게이지 모핑(Button-to-Gauge Morphing)** 인터랙션을 통해 압도적인 완성도를 제공한다.
-
-제품의 핵심 약속은 세 가지다.
-
-1. **품질만 남긴다.** 240p~720p, 128kbps~192kbps 같은 저품질 선택지는 존재하지 않는다.
-2. **대기 화면을 없앤다.** 분석, 전송, FFmpeg 패키징, ID3 커버 주입, 완료까지 모두 단일 버튼 안에서 실시간으로 보인다.
-3. **설치 프로그램을 요구하지 않는다.** 브라우저는 SSE로 진행률을 구독하고, 완료 즉시 네이티브 파일 다운로드를 트리거한다.
+문서와 코드가 어긋나면 **코드를 고치지 말고 먼저 이 4종 문서를 코드에 맞춘다.**
 
 ---
 
-## 2. 타깃 유저 및 핵심 시나리오
+## 0. 문서 기준
 
-- **콘텐츠 크리에이터 & 에디터:** 편집 소스로 사용할 선명한 1080p 60fps 또는 4K 원본급 영상 클립이 즉시 필요한 사용자.
-- **오디오 애호가 & 음악 수집가:** 커버 아트 썸네일과 곡 정보(ID3 Tag)가 완벽히 주입된 320kbps 고음질 MP3 또는 무손실 FLAC 소스가 필요한 사용자.
-
-### 2.1 대표 시나리오
-
-| 시나리오 | 사용자 행동 | 기대 결과 |
-| :--- | :--- | :--- |
-| 원클릭 붙여넣기 | 클립보드 아이콘 클릭 | URL 즉시 반영 → 600ms 디바운스 후 자동 Inspect |
-| 고화질 클립 추출 | 비디오 탭 + 1080p 또는 4K 선택 후 다운로드 | MP4 단일 컨테이너, `faststart` 적용, 브라우저 파일 저장 |
-| 앨범아트 음원 추출 | 오디오 탭 + 320k 또는 FLAC 선택 후 다운로드 | ID3/Vorbis 메타 + 커버 아트가 주입된 파일 저장 |
-| 실패 복구 | 429 / 지리적 제한 / 삭제된 영상 | 명확한 에러 코드와 사유 표시, 버튼이 `error` → 재시도 가능 상태로 롤백 |
-
----
-
-## 3. 기능 스코프 (Scope Matrix)
-
-| 구분 | In-Scope (핵심 제공 기능) | Out-of-Scope (의도적 배제) |
-| :--- | :--- | :--- |
-| **비디오** | • 1080p FHD (기본 권장, MP4/H.264)<br>• 4K UHD (2160p, MP4 원본 유지) | 240p, 360p, 480p, 720p 등 저화질 선택지 배제 |
-| **오디오** | • MP3 320kbps CBR (최고 음질, ID3 태그 자동 주입)<br>• FLAC (무손실 오디오) | 128kbps, 192kbps 등 압축 손실률이 높은 음질 배제 |
-| **UI/UX** | • 원클릭 클립보드 붙여넣기<br>• 비디오 썸네일/재생시간/제목 인스펙트 카드<br>• 인라인 버튼-투-게이지 모핑 프로그레스 바 | 조잡한 팝업 광고, 새 탭 리다이렉트, 배너 광고 전면 배제 |
-| **다운로드** | • SSE 기반 실시간 전송 속도 및 진행률(%) 표기<br>• 브라우저 기본 파일 스트림 자동 트리거 | 별도의 설치 프로그램 강제 유도 배제 |
-
----
-
-## 4. 세부 기능 요구사항 (Functional Requirements)
-
-### 4.1 링크 검증 및 메타데이터 파싱 (Inspect)
-
-- 입력된 URL의 유효성을 정규식으로 검증한다. 최소 조건은 `http(s)` 스킴과 호스트가 존재하는 미디어 URL이다.
-- YouTube(`youtube.com`, `youtu.be`), 그리고 `yt-dlp`가 지원하는 동일 계열 링크를 1차 타깃으로 한다.
-- `yt-dlp`의 `extract_flat=True` / `skip_download=True` 모드를 활용하여 스트림 다운로드 없이 **800ms 이내**에 제목, 채널명, 재생 시간, 최고해상도 썸네일 URL을 파싱해 클라이언트에 반환한다.
-- 프론트엔드는 URL 입력 완료를 **600ms 디바운스**로 감지한 뒤 `POST /api/inspect`를 자동 호출한다. 더미/하드코딩 프리뷰 데이터는 금지한다.
-- 재생 시간은 `HH:MM:SS` 또는 `MM:SS` 문자열로 정규화한다. 예: `240`초 → `04:00`.
-- 썸네일은 가능한 한 `maxresdefault` / 최고 해상도 URL을 우선한다.
-
-**Inspect 성공 응답 계약**
-
-```json
-{
-  "title": "Starlight (Official Audio)",
-  "author": "Muse",
-  "duration": "04:00",
-  "thumbnail": "https://i.ytimg.com/vi/.../maxresdefault.jpg"
-}
-```
-
-### 4.2 다운로드 작업 및 포맷팅 (Process & Muxing)
-
-- **비디오 다운로드:** 비디오 스트림과 최상위 오디오 스트림을 분리 수집한 뒤, `FFmpeg`를 통해 `movflags +faststart` 옵션을 적용한 MP4 단일 컨테이너로 무손실 병합(Muxing)한다.
-  - `1080p`: `bestvideo[height<=1080]+bestaudio/best[height<=1080]`
-  - `4k`: `bestvideo[height<=2160]+bestaudio/best`
-- **오디오 다운로드:** 원본 오디오 스트림을 추출한다.
-  - `320k`: `LAME`/`FFmpegExtractAudio`로 320kbps CBR MP3 변환. 동시에 원본 썸네일을 다운로드하여 **ID3 v2.3/v2.4** 규격 커버 아트로 바이너리 주입한다. `FFmpegMetadata` + `EmbedThumbnail` 필수.
-  - `flac`: 무손실 FLAC 추출. 가능한 한 커버 아트와 메타데이터를 함께 임베드한다.
-- 작업은 즉시 실행하지 않고 `job_id`(UUID4)를 발급한 뒤 백그라운드 잡으로 처리한다. API는 `202 Accepted`와 `job_id`만 반환한다.
-
-### 4.3 실시간 텔레메트리 (SSE Progress Engine)
-
-- `yt-dlp` 내장 `progress_hooks`를 통해 전송률, 다운로드 속도(MB/s), 예상 소요 시간(ETA)을 수집한다.
-- Server-Sent Events(SSE) 파이프라인으로 클라이언트에 **0.2초 주기**로 상태를 브로드캐스팅한다.
-- 이벤트 종류는 최소 다음 네 가지다.
-
-| Event | 의미 | 필수 페이로드 |
-| :--- | :--- | :--- |
-| `progress` | 원본 스트림 수신 중 | `status=downloading`, `percent`, `speed`, `eta` |
-| `processing` | FFmpeg mux / ID3 주입 중 | `status=processing`, `detail` |
-| `complete` | 최종 파일 준비 완료 | `status=done`, `download_url` |
-| `error` | 복구 가능한 실패 | `status=error`, `code`, `message` |
-
-- 클라이언트는 `complete`를 수신하면 hidden `<a download>`를 프로그래밍 방식으로 클릭하여 브라우저 기본 저장을 트리거한다.
-
-### 4.4 버튼-투-게이지 모핑 (Button-to-Gauge Morphing)
-
-다운로드 CTA는 페이지를 떠나지 않는다. 버튼 자체가 상태 머신이며, 레이아웃 시프트 없이 내부 HUD만 교체된다.
-
-| 상태 | 사용자에게 보이는 것 |
+| 항목 | 값 |
 | :--- | :--- |
-| `idle` | 포맷/품질이 반영된 CTA + 예상 용량 |
-| `inspecting` | 스피너 + 스트림 분석 카피 |
-| `downloading` | 시안-인디고-자홍 그라디언트 게이지 + `%` / `MB/s` / `ETA` |
-| `processing` | 게이지 95% 고정 + 펄스 + FFmpeg/ID3 카피 |
-| `completed` | 에메랄드 체크마크. **3초 후 `idle` 복귀** |
-| `error` | 로즈 테두리 + 실패 사유. 재클릭으로 재시도 |
-
-상세 시각 규칙은 `UI_SPEC.md`가 단일 소스다.
+| 문서 갱신 | 2026-09-18 (KST). React #185 수정본을 백업하고 공개 사이트·테스트 ZIP을 배포 |
+| Git HEAD | `3130887ccb4f71ff90b793fe738bf4ec90608acd` (2026-09-16) |
+| 워킹 트리 | HEAD + 미커밋 수정 + 미추적 소스 포함. 마지막 커밋만 기준이 아님 |
+| 소스 지문 | `source_fingerprint` = `024cf05c6fd84184085e3007658c393e1da44b8371864c355ec50af7c11e3ccc` |
+| 복원 부록 | 파일 117, TAR SHA-256 `32a792361973c6b8d7d74cde2d7db7b0872af43c6cb10548079a9a722c639923` |
+| 비밀 | `OPENAI_API_KEY`, 쿠키, `.env` 실값, 사용자 다운로드, 브라우저 프로필은 문서·부록에 넣지 않음 |
 
 ---
 
-## 5. 비기능적 요구사항 및 리소스 수명주기 (Non-Functional Requirements)
+## 1. 기본설계 — 설치 파일은 소스와 항상 같다
 
-### 5.1 임시 파일 가비지 컬렉션 (GC)
+SonicStream의 배포 단위는 **웹 서버가 아니라 Windows 설치 ZIP**이다.
 
-- 작업별 작업 디렉터리는 `tempfile.gettempdir()` 하위의 `sonic_{job_id}` 이다. POSIX에서는 관례적으로 `/tmp/sonic_{job_id}`와 동일하다. Windows에서도 `/tmp` 하드코딩을 쓰지 않는다.
-- 다운로드 완료 후 생성된 미디어 파일은 **클라이언트 전송 완료 즉시**, 또는 전송이 끝나지 않아도 **최대 10분 후** 작업 디렉터리에서 자동 삭제한다.
-- `complete` 이후 fetch되지 않은 잡, 실패한 잡, 중단된 잡 모두 GC 대상이다.
-- 프로세스 시작 시 만료된 `sonic_*` 잔존 디렉터리를 한 번 스윕한다.
+| 규칙 | 내용 |
+| :--- | :--- |
+| 파생물 | `dist/SonicStream-Windows.zip` 은 그 순간 워크트리의 프론트·백엔드·패키징·안내문을 다시 빌드한 결과다. 예전 ZIP을 재사용하지 않는다. |
+| 필수 트리거 | 화면, API, 엔진, 패키징 bat/ps1, 사용설명서 중 하나라도 바꾸면 배포 전에 `다른PC에설치하기.bat`을 다시 실행한다. |
+| 지문 | 패키저는 `source_fingerprint`를 `BUILD.json`과 `dist/last-package.json`에 남긴다. |
+| 개발 ≠ 배포 | `시작하기.bat`은 개발용(포트 8000/3000)이다. 설치본을 갱신하지 않는다. |
+| 사이트 ≠ 엔진 | Vercel/공개 URL은 설치 안내·ZIP 랜딩이다. 그 서버에서 YouTube를 받지 않는다. |
+| 공개 업로드 | `SONICSTREAM_UPLOAD_RELEASE=1` 이고 `gh`가 있을 때만 GitHub Release `windows`에 올린다. 로컬 ZIP 성공과 업로드 성공을 섞지 않는다. |
+| 비밀 | 실키·쿠키는 Git·ZIP·릴리스 노트·복원 부록에 넣지 않는다. |
 
-### 5.2 예외 처리
-
-원본 플랫폼의 봇 차단(HTTP 429), 지리적 제한, 삭제된 동영상, 라이브 스트림, 비공개 영상 요청 시 클라이언트에 명확한 에러 코드와 사유를 반환하고 UI를 **재시도 가능** 상태로 롤백한다. 무한 스피너/행(hang)은 결함이다.
-
-| Code | 조건 | 사용자 메시지 (ko) |
-| :--- | :--- | :--- |
-| `INVALID_URL` | 정규식/스킴 실패, 빈 값 | 유효한 동영상 링크를 입력해 주세요. |
-| `UNSUPPORTED_URL` | yt-dlp가 추출 불가 | 지원하지 않는 링크입니다. |
-| `NOT_FOUND` | 삭제/비공개 | 영상을 찾을 수 없습니다. |
-| `GEO_RESTRICTED` | 지역 제한 | 이 영상은 지역 제한으로 받을 수 없습니다. |
-| `RATE_LIMITED` | HTTP 429 / 봇 차단 | 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요. |
-| `LIVE_STREAM` | 진행 중 라이브 | 라이브 스트림은 지원하지 않습니다. |
-| `JOB_NOT_FOUND` | 알 수 없는 job_id | 다운로드 작업을 찾을 수 없습니다. |
-| `PROCESS_FAILED` | FFmpeg/yt-dlp 실패 | 변환에 실패했습니다. 다시 시도해 주세요. |
-| `TIMEOUT` | 과도한 대기 | 시간이 초과되었습니다. 다시 시도해 주세요. |
-
-Inspect와 Download는 위 코드를 JSON으로 반환한다. SSE 경로에서는 `event: error`로 동일 계약을 보낸다.
-
-### 5.3 성능 · 보안 · 운영
-
-- Inspect P95 목표: **800ms** (네트워크/원본 플랫폼 지연 제외 시 파싱 경로 기준).
-- SSE 틱 주기: **200ms**. 동일 percent를 연속 송출하지 않도록 변화분 또는 주기 중 하나를 만족할 때만 emit 해도 된다. 다만 클라이언트는 0.2초 단위 갱신을 가정한다.
-- CORS: 개발 환경에서 `http://localhost:3000`을 허용한다.
-- 파일명: 원본 제목을 사용하되 Windows/HTTP 헤더에 위험한 문자는 제거한다. 긴 제목은 UI에서 `truncate`, `Content-Disposition`은 RFC 5987 `filename*`를 함께 넣는다.
-- 비밀키, 광고 SDK, 트래커, 설치형 클라이언트는 도입하지 않는다.
+구현: `scripts/package-windows.ps1`, `scripts/package-fingerprint.ps1`, `다른PC에설치하기.bat`.
 
 ---
 
-## 6. 현재 구현 대비 갭 (Agent가 채워야 할 상태)
+## 2. 제품 정의
 
-문서 작성 시점의 레포 상태. Composer는 이 갭을 기준으로 코드를 완성한다.
+SonicStream은 **Windows PC 전용** YouTube/미디어 다운로더다.
 
-| 영역 | 현재 | 목표 |
-| :--- | :--- | :--- |
-| Frontend | Next.js 16.3.5 App Router, React 19, Tailwind CSS v4, Framer Motion, lucide-react | 유지. 목업을 실제 API/SSE로 교체 |
-| `page.tsx` | URL 길이 > 10이면 Unsplash 더미 `mediaInfo` 세팅 | 600ms 디바운스 후 `POST /api/inspect` |
-| `DownloadButton.tsx` | `setTimeout`/`setInterval` 가짜 진행률. `processing`/`error` 상태 없음 | 실제 `POST /api/download` + EventSource + 자동 fetch |
-| `MediaCard.tsx` | 16:9 썸네일, truncate 타이틀, 채널/길이. 스펙과 거의 일치 | Inspect 실데이터만 연결 |
-| `globals.css` | `@import "tailwindcss";` 만 존재. `animate-shimmer` 미정의 | `@theme` 토큰 + shimmer keyframes |
-| `layout.tsx` | Create Next App 기본 메타/배경 | Obsidian 캔버스, SonicStream 메타 |
-| Backend | **디렉터리 없음** | FastAPI + yt-dlp + SSE + FileResponse + GC |
+- 엔진: 이 PC의 FastAPI + yt-dlp + FFmpeg.
+- 화면: Next.js 정적 UI를 Edge/Chrome `--app=` 창으로 연다. 개발 시에는 Next dev.
+- 저장: 사용자가 고른 로컬 폴더. 기본은 **`다운로드\SonicStream`**.
+- 기록: 브라우저 `localStorage` `sonicstream.history.v1` **그리고** 이 PC `data/history.json` (최대 30). 서버 공용 DB 없음.
+- AI: 각 PC의 `OPENAI_API_KEY`로 `gpt-4o-mini` 검색 대화. 키가 저장되어 있으면(`ready` 또는 `configured`) 메인에서 AI 창을 연다. 없으면 일반 검색만.
+- 웹 배포본: 접속 즉시 설치 안내. ZIP을 받아 이 PC에 설치해야 받는다.
+
+대상: 30대 중반 전후. 큰 글씨·큰 버튼. 광고/저품질 칩 없음.
 
 ---
 
-## 7. 성공 기준 (Definition of Done)
+## 3. 한다 / 하지 않는다
 
-1. 유효한 YouTube URL을 붙여넣으면 800ms급 Inspect 카드가 실제 제목/채널/길이/썸네일로 등장한다.
-2. 비디오 1080p/4K, 오디오 320k/FLAC 중 하나를 고르고 버튼을 누르면 `job_id`가 발급되고 버튼이 게이지로 모핑된다.
-3. SSE로 `%`, `MB/s`, `ETA`가 갱신되고, processing 구간에서 FFmpeg/ID3 카피가 보인다.
-4. `complete` 후 파일이 브라우저에 저장되며, MP3에는 커버 아트가 들어 있다.
-5. 실패 시 행하지 않고 `error`로 롤백되며 재시도가 가능하다.
-6. fetch 직후 또는 10분 후 `sonic_{job_id}` 작업 디렉터리가 삭제된다.
-7. 광고, 저품질 옵션, 설치 프로그램, 더미 진행률 타이머가 코드에 남아 있지 않다.
+### 한다
 
-구현 디테일의 단일 소스는 `ARCHITECTURE.md`, 시각/인터랙션의 단일 소스는 `UI_SPEC.md`, 단계별 실행 지시는 `PROMPTS.md`다.
+- URL 붙여넣기 → Inspect → 포맷 선택 → 이 PC 폴더에 저장.
+- 비디오: `best` / `720p` / `1080p` / `4k` MP4. 가능하면 별도 영상+오디오를 FFmpeg mux. 원본 화면비 유지.
+- 오디오: 320k MP3(ID3+커버), FLAC.
+- 세로·쇼츠는 화면 분류. 다운로드 `format`은 영상 또는 오디오.
+- 왼쪽: 일반 검색(돋보기, 12건) + AI 검색.
+- AI 전용 창: 왼쪽 대화 / 오른쪽 결과 12건 + 바로보기 + 대본 + 음량.
+- 도움말 창, 설치 안내 창.
+- 메인 창이 뒤에 있으면 `open_main`으로 앞으로.
+- 창은 Windows **작업 영역**(작업표시줄 위) 안에 연다. 자동 숨김이어도 하단 48px를 비운다. 정본: `UI_SPEC.md` §2.
+- SSE 진행, 완료 후 파일/폴더 열기, 경로 복사.
+- 글자 크기 토글, API 연결 상태.
+- 받은 파일 등록부(`file-registry.json`)로 예전 저장 폴더의 파일도 열 수 있다.
+
+### 하지 않는다
+
+- 메인을 여러 페이지로 쪼개 라우팅하지 않는다. `/ai` `/help` `/install`만 별도 창.
+- 메인에 광고/트래커/저품질 칩을 넣지 않는다. 설치·AI 키 안내는 오버레이일 수 있다.
+- Vercel/Render를 YouTube 다운로드 백엔드로 쓰지 않는다. Render에서 된다고 주장하지 않는다.
+- 쿠키를 첫 사용 조건으로 요구하지 않는다.
+- 설치 ZIP에 `.env` 실키를 넣지 않는다.
+- 모든 영상이 항상 받아진다고 약속하지 않는다.
+- 요약·장면 썸네일은 아직 제품 밖이다. 가짜 버튼을 넣지 않는다.
+
+---
+
+## 4. 실행 모드
+
+| 모드 | 누가 쓰나 | 포트 | UI | 설치 안내 |
+| :--- | :--- | :--- | :--- | :--- |
+| 개발 (`시작하기.bat`) | 이 레포가 있는 PC | API `127.0.0.1:8000`, Next `127.0.0.1:3000` | `npm run dev` | 루프백이라 자동 안내 없음. `?install=1`만 미리보기 |
+| 패키지/데스크톱 | ZIP으로 설치한 PC | 엔진+정적 UI **고정 `127.0.0.1:8011`**. 점유 시 실패. 개발 :8000을 재사용하지 않음 | `SONICSTREAM_STATIC=1`로 빌드한 `frontend/out` | 루프백이라 자동 안내 없음 |
+| 배포 사이트 | 공개 URL | 공개 호스트. 다운로드 API 없음 | Next 호스팅 | **첫 페인트부터** 설치 안내. ZIP만 |
+
+판별:
+
+- `isLoopbackHost` → 설치 안내 자동 오픈 금지.
+- `isDeployedSite`이고 정적 데스크톱이 아니면 설치 안내.
+- 첫 페인트는 `boot`(서버·하이드레이션 동일). 클라이언트 snapshot이 공개 호스트 또는 `?install=1`이면 `public` 설치 안내, 루프백이면 `local` 3열.
+- 공개 셸에서는 이력 패널·로컬 설정·창 조절·로컬 API를 마운트하지 않는다. 설치 파일 링크는 백엔드 없이 동작한다.
+- 루프백 API(`/api/local/*`)는 Host가 loopback일 때만.
+
+---
+
+## 5. 핵심 사용 흐름
+
+### 5.1 메인 — URL로 받기
+
+1. 주소 붙여넣기 또는 일반/AI 검색에서 URL 선택.
+2. 600ms 디바운스 후 `POST /api/inspect`.
+3. 카드에 제목/채널/길이/썸네일.
+4. 영상 | 세로·쇼츠 | 오디오, 화질 선택.
+5. `POST /api/download` → `job_id` → `GET /api/progress/{job_id}` SSE.
+6. 로컬이면 지정 폴더에 저장. **완료 UI는 `delivery=local_file`이고 `saved_path`가 있으며 `verified=true`일 때** 「저장됨」. 검증 실패는 완료로 치지 않는다.
+
+### 5.2 일반 검색
+
+- 검색창 **맨 오른쪽 돋보기**(또는 Enter).
+- `POST /api/search`. 결과는 **메인 왼쪽 패널에 12건**. AI 창을 열지 않는다.
+- 카드 클릭 → URL 세팅 → Inspect.
+
+### 5.3 AI 검색
+
+- 메인 「AI 검색」은 `GET /api/status`의 `openai`가 **`ready` 또는 `configured`** 일 때 `/ai` 창을 연다 (`hasSavedOpenaiKey`). 상태 폴은 유료 OpenAI 호출을 하지 않는다.
+- 검색어가 비어 있어도 키가 있으면 창을 연다 (`/ai`, q 없음).
+- 키가 없으면 **메인 안 안내**만 띄운다. 확인하면 안내만 닫고 메인 유지. 버튼 경로로는 `/ai`를 열지 않는다.
+- 주소창으로 `/ai`에 직접 들어가면 프론트 가드가 없다. 키 없이 `POST /api/ai-search`하면 `AI_UNAVAILABLE`.
+- 창: 왼쪽 채팅(복사/재전송), 오른쪽 결과 12건, 바로보기, 조회수, 대본, 음량.
+- `POST /api/ai-search`. 모델 기본 `gpt-4o-mini`. 프롬프트 400자. 키워드 최대 2. 결과 상한 `YTSEARCH_LIMIT = 12`.
+- AI 창의 1080p/MP3는 메인에 다운로드를 요청하고 4초 안 ACK를 기다린다. 실패 문구: 「메인 창이 받기를 시작하지 못했습니다. 메인 화면을 연 뒤 다시 눌러 주세요.」
+
+### 5.4 대본
+
+- 바로보기 **대본** → `POST /api/transcript`.
+- 자막/자동자막(json3/vtt). 줄이 없으면 「이 영상은 대본이 없습니다.」
+- 요청 자체가 실패하면 「대본을 가져오지 못했습니다.」(또는 서버 메시지)
+- 줄 클릭 시 플레이어 시크.
+- 영상을 바꾸면 대본 상태를 그 URL 기준으로 다시 읽는다.
+- 로드맵: 대본 → 요약 → 장면. 요약·장면은 제품 밖.
+
+### 5.5 바로보기 음량
+
+- 기본 **80**. 키 `sonicstream.watchVolume.v1`.
+- **0을 저장하면** 다음에도 0(음소거로 시작).
+- 음소거 해제 시: 현재 값이 0보다 크면 그 값, 아니면 마지막으로 들린 값, 그것도 없으면 **80**.
+
+### 5.6 설치 (다른 사용자)
+
+1. 공개 사이트 → 설치 안내(동의).
+2. 「동의하고 설치하기」는 `SonicStream-설치.bat`을 받고, 「설치 파일만 받기」는 ZIP.
+3. ZIP: GitHub Release `windows`의 `SonicStream-Windows.zip` 또는 로컬 `/api/desktop/installer`.
+4. `설치하기.bat` → `%LOCALAPPDATA%\SonicStream`.
+5. `실행하기.bat` → 엔진+UI. 아이콘을 다시 누르면 기존 메인 창을 앞으로.
+
+### 5.7 메인 창 재오픈
+
+AI/도움말에서 메인 열기: `opener.focus()` 후 항상 `POST /api/local/window` `{ action: "open_main" }`.
+
+백엔드: 제목이 정확 `SonicStream` 이거나 `| SonicStream`으로 끝나는 창만. AI 제목 `SonicStream AI`, 도움말 `SonicStream 도움말`, 설치 `SonicStream 설치`는 메인이 아니다.
+
+---
+
+## 6. 기능 계약
+
+### 6.1 Inspect
+
+- `POST /api/inspect` `{ url }`
+- 응답: title, author, duration, thumbnail, width/height, preview_only, duration_known.
+- 실패 코드는 `ARCHITECTURE.md` §4, 사용자 문구는 아래 표와 `classify.USER_MESSAGES`.
+
+### 6.2 Download + SSE
+
+| Event | 의미 |
+| :--- | :--- |
+| `progress` | `status=downloading`, percent, speed, eta |
+| `processing` | mux / ID3 |
+| `complete` | `status=done`, 로컬 경로. `verified`가 true여야 저장 완료 UI |
+| `error` | code, message |
+
+작업 디렉터리: `tempfile.gettempdir()/sonic_{job_id}`. 전송 직후 또는 최대 10분 GC. 시작 시 `sonic_*` 스윕.
+
+중복 파일명: `이름 (2).ext` 형식. 복사 중 `.sspartial` 후 교체.
+
+취소: `POST /api/jobs/{job_id}/cancel`. 완료된 작업은 완료를 덮어쓰지 않는다.
+
+### 6.3 품질
+
+`MediaQuality`: `best` | `720p` | `1080p` | `4k` | `320k` | `flac`.
+
+비디오는 가능하면 별도 최적 영상+오디오 후 FFmpeg. 오디오 320k는 ID3+커버. 화면비는 원본. 세로를 가로로 늘리거나 자르지 않는다.
+
+### 6.4 검색·AI·대본
+
+- 카드: title, author, url, thumbnail, duration, views.
+- AI: 프롬프트→키워드(최대 2)→`ytsearch`.
+- 대본: language, automatic, lines[{start,text}], text.
+
+### 6.5 로컬 전용 API
+
+루프백 Host만. 목록 정본: `ARCHITECTURE.md` §4.
+
+주요: 설정, 폴더 선택, 파일/폴더 열기, 창, 종료, **이력 GET/POST**, runtime, installer.
+
+### 6.6 클라이언트·PC 상태
+
+| 키 / 파일 | 내용 |
+| :--- | :--- |
+| `sonicstream.history.v1` | 브라우저 이력. 최대 30. 마운트 전에는 빈 배열(하이드레이션) |
+| `sonicstream.activeJobs.v1` | 진행 중 jobId→historyId |
+| `{home}/data/history.json` | 같은 30개. `/api/local/history`로 이관 |
+| `{home}/data/file-registry.json` | 저장된 파일 경로. 상한 400. 예전 폴더 파일 열기 허용 |
+| `sonicstream.textSize.v1` | `'1'`이면 `html.large-type`, `'0'`이면 기본 |
+| `sonicstream.watchVolume.v1` | 바로보기 음량 0–100. 기본 80 |
+
+`home`: `SONICSTREAM_HOME` 또는 `%LOCALAPPDATA%\SonicStream`.
+
+### 6.7 파일 열기 권한
+
+현재 저장 폴더 안의 파일이거나 등록부에 있는 경로만 연다. 등록되지 않은 임의 경로는 `FORBIDDEN`.
+
+---
+
+## 7. 창과 작업표시줄 (사용자 관점)
+
+현상: AI/메인 창 하단(입력칸)이 Windows 작업표시줄에 가려질 수 있다. 자동 숨김이 켜져 있으면 사용 가능 높이가 화면 전체처럼 잡혀 창이 밑으로 내려간다.
+
+제품 약속:
+
+- 메인·AI·도움말·설치 창을 **열 때** 작업 영역 안에 맞춘다.
+- 메인·AI는 연 뒤에도 넘치면 다시 맞춘다.
+- **전체**는 작업 영역만큼. **조절창**은 1280×800(또는 그에 맞게 축소)을 작업 영역 안에.
+- 항상 위(TOPMOST)로 고정하지 않는다. 메인을 앞으로 가져올 때만 잠깐 TOPMOST 후 바로 해제한다.
+
+픽셀·함수: `UI_SPEC.md` §2. 구현: `ARCHITECTURE.md` §9.
+
+시험 범위: `YOUTUBE_OPS.md` §5. 배율·다중 모니터·실제 작업표시줄 자동 숨김은 **코드 확인**. 이 문서 갱신 시점에 실제 Windows 작업표시줄 위 재확인은 하지 않음.
+
+---
+
+## 8. 비기능
+
+- 메인 첫 화면은 단일 페이지 3열. 별도 창만 라우트.
+- CORS: 개발 3000/8000, 패키지 8011 루프백.
+- 파일명: 원본 제목, Windows 금지문자 제거, `filename*`(RFC 5987).
+- 에러는 무한 스피너 금지. 버튼 `error` 후 재클릭.
+- 쿠키는 선택.
+- 로그: 설치본/개발 `backend/logs`. 스냅샷에 비밀 없음.
+- `/api/status` 주기 조회는 유료 OpenAI를 부르지 않음.
+
+사용자 메시지 정본은 `backend/app/classify.py` `USER_MESSAGES`다. 자주 쓰는 항목:
+
+| Code | 사용자 메시지 (ko) |
+| :--- | :--- |
+| `INVALID_URL` | 유효한 동영상 링크를 입력해 주세요. |
+| `UNSUPPORTED_URL` | 이 주소에서는 받을 수 있는 형식을 찾지 못했습니다. |
+| `NOT_FOUND` | 영상을 찾을 수 없습니다. |
+| `GEO_RESTRICTED` | 이 영상은 지역 제한으로 받을 수 없습니다. |
+| `RATE_LIMITED` | 요청이 많아 잠시 대기한 뒤 다시 시도합니다. |
+| `LIVE_STREAM` | 라이브 스트림은 지원하지 않습니다. |
+| `JOB_NOT_FOUND` | 다운로드 작업을 찾을 수 없습니다. |
+| `PROCESS_FAILED` | 변환에 실패했습니다. 다시 시도해 주세요. |
+| `TIMEOUT` | 시간이 초과되었습니다. 다시 시도해 주세요. |
+| `AI_UNAVAILABLE` | AI 검색을 쓰려면 OpenAI 키를 이 컴퓨터에 넣어 주세요. |
+| `AI_FAILED` | AI 검색을 끝내지 못했습니다. 잠시 후 다시 시도해 주세요. |
+| `VERIFY_FAILED` | 받은 파일이 손상되었거나 필요한 영상이 없습니다. |
+| `VERIFY_UNAVAILABLE` | 파일 검사를 할 수 없어 완료로 저장하지 않았습니다. |
+| `CANCELLED` | 받기를 취소했습니다. |
+| `LOCAL_ONLY` | 이 프로그램은 이 PC에 설치해서 사용합니다. |
+| `FORBIDDEN` | 허용되지 않은 경로입니다. |
+
+전체 코드 목록은 `ARCHITECTURE.md` §5.
+
+---
+
+## 9. 다른 PC 100% 재현 — 정의
+
+1. **소스 복원:** 빈 폴더에 MD 4개만 두고 `YOUTUBE_OPS.md` 복원 부록을 풀면 소스·lockfile·패키징이 매니페스트 해시와 같다. YouTube 미래 성공은 포함하지 않는다.
+2. clone이 가능하면 레포를 받아도 된다. 그다음 `YOUTUBE_OPS.md`의 개발 설치로 `시작하기.bat`.
+3. 같은 레포에서 `다른PC에설치하기.bat`으로 ZIP을 만들면 `BUILD.json` 지문이 그 소스와 같다. 공개 업로드는 별도 플래그.
+4. ZIP을 다른 Windows에 풀어 `설치하기.bat`하면 엔진+UI+FFmpeg+바로가기가 동작한다.
+5. OpenAI 키는 그 PC에서만 넣고, 없어도 붙여넣기·일반 검색·다운로드는 된다.
+6. 공개 사이트는 설치 안내만 하고, 받는 행위는 설치본에서만 한다.
+
+성공 기준:
+
+1. 유효 URL Inspect → 실데이터 카드.
+2. 1080p/4K/320k/FLAC 중 선택 → SSE → 로컬 파일(`verified=true`).
+3. 돋보기 12건. AI 창은 키가 `ready` 또는 `configured`일 때.
+4. 대본 있음/없음/요청 실패를 구분한다.
+5. 배포 URL은 설치 안내. 루프백은 안내 없음.
+6. 소스 변경 후 옛 ZIP을 주지 않는다.
+7. 메인·AI 창이 작업표시줄 아래로 들어가지 않게 열린다(작업 영역 규칙).
+
+---
+
+## 10. 문서 역할
+
+| 파일 | 역할 |
+| :--- | :--- |
+| `PRD.md` | 무엇을 만드는지, 성공 기준, 제한 |
+| `ARCHITECTURE.md` | 디렉터리, 프로세스, API, 데이터, 보안 경계 |
+| `UI_SPEC.md` | 창·패널·토큰·문구·작업표시줄 |
+| `YOUTUBE_OPS.md` | 복원, 개발, 시험, 빌드, 설치, 장애 |
+
+같은 숫자를 네 문서에 길게 반복하지 않는다. 값이 하나만 있어야 하면 위 정본을 따른다.

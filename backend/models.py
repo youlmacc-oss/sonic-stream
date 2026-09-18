@@ -17,25 +17,6 @@ class InspectRequest(BaseModel):
     url: str
 
 
-class TranscriptRequest(BaseModel):
-    url: str
-
-
-class TranscriptLine(BaseModel):
-    start: float
-    text: str
-
-
-class TranscriptResponse(BaseModel):
-    url: str
-    language: str = ""
-    automatic: bool = False
-    lines: list[TranscriptLine] = []
-    text: str = ""
-    error: str = ""
-    code: str = ""
-
-
 class SearchRequest(BaseModel):
     query: str
     limit: int = 30
@@ -56,14 +37,8 @@ class SearchResponse(BaseModel):
     items: list[SearchHit]
 
 
-class ChatTurn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
 class AiSearchRequest(BaseModel):
     prompt: str
-    history: list[ChatTurn] = []
 
 
 class AiSearchResponse(BaseModel):
@@ -109,10 +84,6 @@ class LocalSettingsRequest(BaseModel):
 
 class LocalWindowRequest(BaseModel):
     action: Literal["minimize", "maximize", "restore", "open_main"]
-
-
-class LocalHistoryRequest(BaseModel):
-    items: list[dict] = []
 
 
 class ErrorBody(BaseModel):

@@ -19,7 +19,24 @@ from app.policy import decide_next
 from app.quality import format_display_size, format_fits_quality, pick_video_format, select_download_format
 from app.routes import configured_routes
 from app.runtime import enabled_js_runtimes
-from app.ytdlp_engine import JobYDLLogger, download_client_attempts
+from app.desktop import fit_window_in_area, set_foreground_window_state, set_save_dir, settings_path, validate_save_dir
+from app.installer import installer_file, installer_public_url, setup_batch
+from app.local_runtime import ManagedFileError, default_save_dir, resolve_managed_file, runtime_location
+from app.env_file import apply_env_file, parse_env_line, upsert_env_value
+from app.ui_static import resolve_ui_dir, ui_html_page
+from app.ytdlp_engine import (
+    JobYDLLogger,
+    download_client_attempts,
+    format_view_count,
+    normalize_search_query,
+    reset_ffmpeg_dir_cache,
+    resolve_ffmpeg_dir,
+    SEARCH_RESULT_MAX,
+    innertube_continuation_token,
+    search_hits_from_info,
+    search_hits_from_innertube,
+    search_videos,
+)
 from app.youtube_auth import apply_youtube_auth, cookie_state, resolve_cookiefile
 
 
@@ -249,6 +266,259 @@ class OpsFixTests(unittest.TestCase):
             self.assertEqual(cookie_state(), "invalid_format")
             self.assertIsNone(resolve_cookiefile())
             self.assertNotIn("cookiefile", apply_youtube_auth({}, use_cookies=True))
+
+    def test_managed_file_stays_inside_save_dir(self) -> None:
+        save = self.dir / "SonicStream"
+        save.mkdir()
+        safe = save / "漂亮的藏族姑娘 (1).mp4"
+        safe.write_bytes(b"abc")
+        outside = self.dir / "secret.txt"
+        outside.write_text("no", encoding="utf-8")
+        with patch("app.local_runtime.default_save_dir", return_value=save):
+            resolved = resolve_managed_file(str(safe))
+            self.assertEqual(resolved, safe.resolve())
+            self.assertEqual(resolve_managed_file(safe.name), safe.resolve())
+            with self.assertRaises(ManagedFileError) as denied:
+                resolve_managed_file(str(outside))
+            self.assertEqual(denied.exception.code, "FORBIDDEN")
+            with self.assertRaises(ManagedFileError) as missing:
+                resolve_managed_file(str(save / "gone.mp4"))
+            self.assertEqual(missing.exception.code, "NOT_FOUND")
+            with self.assertRaises(ManagedFileError):
+                resolve_managed_file(str(save / ".." / "secret.txt"))
+
+    def test_env_file_parses_and_does_not_override(self) -> None:
+        self.assertEqual(parse_env_line("OPENAI_API_KEY=sk-test"), ("OPENAI_API_KEY", "sk-test"))
+        self.assertEqual(parse_env_line('OPENAI_MODEL="gpt-4o-mini"'), ("OPENAI_MODEL", "gpt-4o-mini"))
+        self.assertIsNone(parse_env_line("# comment"))
+        path = self.dir / ".env"
+        path.write_text("OPENAI_MODEL=from-file\n", encoding="utf-8")
+        with patch.dict(os.environ, {"OPENAI_MODEL": "already-set"}, clear=False):
+            apply_env_file(path)
+            self.assertEqual(os.environ["OPENAI_MODEL"], "already-set")
+            apply_env_file(path, override=True)
+            self.assertEqual(os.environ["OPENAI_MODEL"], "from-file")
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            upsert_env_value("OPENAI_API_KEY", "sk-user", path)
+            self.assertIn("OPENAI_API_KEY=sk-user", path.read_text(encoding="utf-8"))
+            self.assertEqual(os.environ["OPENAI_API_KEY"], "sk-user")
+            upsert_env_value("OPENAI_API_KEY", "sk-next", path)
+            self.assertEqual(path.read_text(encoding="utf-8").count("OPENAI_API_KEY="), 1)
+            self.assertIn("OPENAI_API_KEY=sk-next", path.read_text(encoding="utf-8"))
+
+    def test_ui_dir_uses_index_and_env(self) -> None:
+        missing = self.dir / "empty-ui"
+        missing.mkdir()
+        with patch.dict(os.environ, {"SONICSTREAM_UI_DIR": ""}, clear=False):
+            self.assertIsNone(resolve_ui_dir(start=missing / "app" / "ui_static.py"))
+        ui = self.dir / "packaged-ui"
+        ui.mkdir()
+        (ui / "index.html").write_text("<html><title>SonicStream</title></html>", encoding="utf-8")
+        with patch.dict(os.environ, {"SONICSTREAM_UI_DIR": str(ui)}, clear=False):
+            self.assertEqual(resolve_ui_dir(), ui.resolve())
+            (ui / "search.html").write_text("<html>search</html>", encoding="utf-8")
+            (ui / "search").mkdir()
+            (ui / "search" / "payload.txt").write_text("x", encoding="utf-8")
+            self.assertEqual(ui_html_page("search"), (ui / "search.html").resolve())
+            (ui / "help.html").write_text("<html>help</html>", encoding="utf-8")
+            (ui / "help").mkdir()
+            self.assertEqual(ui_html_page("help"), (ui / "help.html").resolve())
+            self.assertIsNone(ui_html_page("../secret"))
+
+    def test_ffmpeg_dir_prefers_env_over_cache(self) -> None:
+        bundled = self.dir / "ffmpeg"
+        bundled.mkdir()
+        exe = bundled / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        exe.write_bytes(b"")
+        reset_ffmpeg_dir_cache()
+        with patch.dict(os.environ, {"SONICSTREAM_FFMPEG_DIR": str(bundled)}, clear=False):
+            self.assertEqual(resolve_ffmpeg_dir(), bundled.resolve())
+        reset_ffmpeg_dir_cache()
+
+    def test_save_dir_settings_and_system_folder_blocked(self) -> None:
+        cfg = self.dir / "settings.json"
+        chosen = self.dir / "Videos"
+        with patch.dict(os.environ, {"SONICSTREAM_SETTINGS": str(cfg)}, clear=False):
+            saved = set_save_dir(str(chosen))
+            self.assertEqual(saved, chosen.resolve())
+            self.assertEqual(default_save_dir().resolve(), chosen.resolve())
+            self.assertEqual(settings_path(), cfg)
+            with self.assertRaises(ManagedFileError) as blocked:
+                validate_save_dir(r"C:\Windows")
+            self.assertEqual(blocked.exception.code, "FORBIDDEN")
+            with self.assertRaises(ManagedFileError):
+                validate_save_dir("relative-folder")
+        with self.assertRaises(ManagedFileError) as window_denied:
+            set_foreground_window_state("explode")
+        self.assertEqual(window_denied.exception.code, "FORBIDDEN")
+        self.assertEqual(fit_window_in_area((0, 0, 1920, 1040), 1280, 800), (80, 40, 1280, 800))
+        small = fit_window_in_area((0, 0, 1280, 720), 1280, 840)
+        self.assertEqual(small[2], 1248)
+        self.assertEqual(small[3], 688)
+        self.assertGreaterEqual(small[1], 16)
+        self.assertLessEqual(small[1] + small[3], 720 - 16)
+        from app.desktop import _safe_loopback_app_url
+
+        self.assertEqual(_safe_loopback_app_url("http://127.0.0.1:8011/ai"), "http://127.0.0.1:8011/")
+        with self.assertRaises(ManagedFileError) as remote_denied:
+            _safe_loopback_app_url("https://example.com/")
+        self.assertEqual(remote_denied.exception.code, "FORBIDDEN")
+
+    def test_search_hits_map_watch_urls(self) -> None:
+        self.assertEqual(normalize_search_query("  봄비  노래  "), "봄비 노래")
+        self.assertEqual(format_view_count(1234567), "123만회")
+        self.assertEqual(format_view_count("조회수 8.5천회"), "8.5천회")
+        self.assertEqual(format_view_count("1.2M views"), "120만회")
+        with self.assertRaises(ValueError):
+            normalize_search_query("")
+        hits = search_hits_from_info(
+            {
+                "entries": [
+                    {"id": "kSahhqze9Ss", "title": "Shorts", "uploader": "Ch", "duration": 13, "view_count": 1234567, "thumbnail": "https://i.ytimg.com/vi/kSahhqze9Ss/hqdefault.jpg"},
+                    {"id": "skip", "url": "not-a-url"},
+                ]
+            }
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["url"], "https://www.youtube.com/watch?v=kSahhqze9Ss")
+        self.assertEqual(hits[0]["title"], "Shorts")
+        self.assertTrue(hits[0]["duration_known"])
+        self.assertEqual(hits[0]["views"], "123만회")
+        tube = search_hits_from_innertube(
+            {
+                "contents": {
+                    "twoColumnSearchResultsRenderer": {
+                        "primaryContents": {
+                            "sectionListRenderer": {
+                                "contents": [
+                                    {
+                                        "itemSectionRenderer": {
+                                            "contents": [
+                                                {
+                                                    "lockupViewModel": {
+                                                        "contentId": "RDPLAYLIST01",
+                                                        "metadata": {"lockupMetadataViewModel": {"title": {"content": "재생목록"}}},
+                                                    }
+                                                },
+                                                {
+                                                    "videoRenderer": {
+                                                        "videoId": "lRaJ86Pe52o",
+                                                        "title": {"runs": [{"text": "전유진 - 나의 별들에게"}]},
+                                                        "ownerText": {"runs": [{"text": "1theK"}]},
+                                                        "lengthText": {"simpleText": "3:46"},
+                                                        "shortViewCountText": {"simpleText": "123만회"},
+                                                        "thumbnail": {"thumbnails": [{"url": "https://i.ytimg.com/vi/lRaJ86Pe52o/hqdefault.jpg"}]},
+                                                    }
+                                                },
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        self.assertEqual(len(tube), 1)
+        self.assertEqual(tube[0]["url"], "https://www.youtube.com/watch?v=lRaJ86Pe52o")
+        self.assertEqual(tube[0]["title"], "전유진 - 나의 별들에게")
+        self.assertEqual(tube[0]["author"], "1theK")
+        self.assertEqual(tube[0]["duration"], "3:46")
+        self.assertEqual(tube[0]["views"], "123만회")
+        token = innertube_continuation_token(
+            {
+                "contents": {
+                    "continuationItemRenderer": {
+                        "continuationEndpoint": {"continuationCommand": {"token": "NEXT30"}}
+                    }
+                }
+            }
+        )
+        self.assertEqual(token, "NEXT30")
+        many = [{"title": f"v{i}", "author": "a", "url": f"https://www.youtube.com/watch?v={i:011d}", "thumbnail": "", "duration": "", "duration_known": False} for i in range(40)]
+        with patch("app.ytdlp_engine.search_via_innertube", return_value=many), patch("app.ytdlp_engine._search_cache_get", return_value=None):
+            result = search_videos("전유진", 40)
+        self.assertEqual(len(result["items"]), SEARCH_RESULT_MAX)
+
+    def test_transcript_parses_captions(self) -> None:
+        from app.transcript import parse_json3_captions, parse_vtt_captions, pick_caption_track
+
+        json_lines = parse_json3_captions(
+            '{"events":[{"tStartMs":1200,"segs":[{"utf8":"안녕 "},{"utf8":"하세요"}]},{"tStartMs":4000,"segs":[{"utf8":"\\n"}]}]}'
+        )
+        self.assertEqual(json_lines[0]["text"], "안녕 하세요")
+        self.assertEqual(json_lines[0]["start"], 1.2)
+        vtt_lines = parse_vtt_captions(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n첫 줄\n\n00:01:02.500 --> 00:01:05.000\n둘째 줄"
+        )
+        self.assertEqual([item["text"] for item in vtt_lines], ["첫 줄", "둘째 줄"])
+        self.assertEqual(vtt_lines[1]["start"], 62.5)
+        picked = pick_caption_track(
+            {
+                "automatic_captions": {
+                    "en": [{"ext": "vtt", "url": "https://example.com/en.vtt"}],
+                    "ko": [{"ext": "json3", "url": "https://example.com/ko.json3"}],
+                }
+            }
+        )
+        self.assertIsNotNone(picked)
+        lang, automatic, track = picked or ("", False, {})
+        self.assertEqual(lang, "ko")
+        self.assertTrue(automatic)
+        self.assertEqual(track["ext"], "json3")
+
+    def test_ai_search_plans_keywords_and_hits(self) -> None:
+        from app.ai_search import AiSearchError, _parse_plan, collect_ytsearch_hits, plan_search, run_ai_search
+
+        reply, keywords = _parse_plan(
+            '{"reply":"전유진 무대를 찾아볼게요.","keywords":["전유진 현역가왕","전유진 히든싱어"]}',
+            "비 오는 날 전유진",
+        )
+        self.assertEqual(reply, "전유진 무대를 찾아볼게요.")
+        self.assertEqual(keywords, ["전유진 현역가왕", "전유진 히든싱어"])
+        with patch("app.ai_search.search_ytsearch", return_value=[
+            {"title": "A", "author": "Ch", "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "thumbnail": "t", "duration": "03:00", "duration_known": True},
+            {"title": "B", "author": "Ch", "url": "https://www.youtube.com/watch?v=bbbbbbbbbbb", "thumbnail": "t", "duration": "04:00", "duration_known": True},
+            {"title": "C", "author": "Ch", "url": "https://www.youtube.com/watch?v=ccccccccccc", "thumbnail": "t", "duration": "05:00", "duration_known": True},
+        ]) as mocked:
+            hits = collect_ytsearch_hits(["전유진 현역가왕", "전유진 히든싱어"], 3)
+            self.assertEqual(len(hits), 3)
+            self.assertEqual(mocked.call_count, 1)
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            with self.assertRaises(AiSearchError) as missing:
+                plan_search("전유진 노래")
+            self.assertEqual(missing.exception.code, "AI_UNAVAILABLE")
+        with patch("app.ai_search.plan_search", return_value=("추천합니다.", ["전유진"])), patch(
+            "app.ai_search.collect_ytsearch_hits",
+            return_value=[{"title": "A", "author": "Ch", "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "thumbnail": "", "duration": "1:00", "duration_known": True}],
+        ):
+            result = run_ai_search("  전유진 좋은 무대  ")
+        self.assertEqual(result["keywords"], ["전유진"])
+        self.assertEqual(len(result["items"]), 1)
+        from app.ai_search import connection_status
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            status = connection_status()
+        self.assertEqual(status["engine"], "ok")
+        self.assertEqual(status["openai"], "no_key")
+
+    def test_installer_info_uses_file_or_public_url(self) -> None:
+        zip_path = self.dir / "SonicStream-Windows.zip"
+        zip_path.write_bytes(b"zip")
+        with patch.dict(os.environ, {"SONICSTREAM_INSTALLER_PATH": str(zip_path), "SONICSTREAM_INSTALLER_URL": ""}, clear=False):
+            self.assertEqual(installer_file(), zip_path.resolve())
+            self.assertTrue(installer_public_url("http://127.0.0.1:8000/").endswith("/api/desktop/installer"))
+        with patch.dict(os.environ, {"SONICSTREAM_INSTALLER_PATH": "", "SONICSTREAM_INSTALLER_URL": "https://example.com/app.zip"}, clear=False):
+            self.assertEqual(installer_public_url(), "https://example.com/app.zip")
+        bat = setup_batch("https://example.com/app.zip")
+        self.assertIn("https://example.com/app.zip", bat)
+        self.assertIn("install-desktop.ps1", bat)
+
+    def test_packaged_ui_defaults_to_local(self) -> None:
+        with patch.dict(os.environ, {"SONICSTREAM_LOCATION": "", "SONICSTREAM_UI_DIR": str(self.dir)}, clear=False):
+            self.assertEqual(runtime_location(), "local")
+        with patch.dict(os.environ, {"SONICSTREAM_LOCATION": "server", "SONICSTREAM_UI_DIR": str(self.dir)}, clear=False):
+            self.assertEqual(runtime_location(), "server")
 
     def test_fallback_success_summarized_as_success(self) -> None:
         emit_event(event="failed", stage="extract", job_id="job-fb", error_code="BOT_CHECK", extra={"final": False})

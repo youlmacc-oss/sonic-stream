@@ -55,6 +55,10 @@ class JobStore:
             job = self._jobs.get(job_id)
             if job is None or job.settled:
                 return None
+            if job.cancel_event.is_set() and status == "done":
+                status = "error"
+                fields.setdefault("error_code", "CANCELLED")
+                fields.setdefault("error_message", "받기를 취소했습니다.")
             for key, value in fields.items():
                 setattr(job, key, value)
             job.status = status  # type: ignore[assignment]
@@ -68,6 +72,14 @@ class JobStore:
             if job is None:
                 return
             job.cancel_event.set()
+            if job.settled:
+                return
+            if job.status == "queued" and not job.worker_alive:
+                job.status = "error"
+                job.error_code = "CANCELLED"
+                job.error_message = "받기를 취소했습니다."
+                job.settled = True
+                job.touch()
 
     def mark_worker(self, job_id: str, alive: bool) -> None:
         with self._lock:

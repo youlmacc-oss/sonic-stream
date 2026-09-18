@@ -1,111 +1,230 @@
-# Cursor Composer Agent Prompts
+# SonicStream 작업 프롬프트
 
-아래 프롬프트들을 Cursor의 **Composer (Agent 모드, `Ctrl + I` 또는 `Cmd + I`)**에 단계별로 입력하여 구현을 완성한다.
+이 파일은 **개발·유지보수 보조 문서**다. Composer/에이전트에 붙여 넣는 재사용 지시만 둔다.
 
-에이전트는 코드를 짜기 전에 반드시 `PRD.md`, `ARCHITECTURE.md`, `UI_SPEC.md`를 읽고, 이 세 문서를 추측보다 우선한다.
+다른 PC에서 프로그램을 복원하는 데 필요한 내용은 여기에만 두지 않는다. 복원·제품·화면·운영의 정본은 아래 4개다.
 
-**와이어 프로토콜 주의:** UI prop 이름은 `format`이지만 `POST /api/download` JSON 필드명은 `type`이다. 바디는 `{ url, type, quality }`이다.
+| 파일 | 역할 |
+| :--- | :--- |
+| `PRD.md` | 사용자 기능, 성공 기준, 제한 |
+| `ARCHITECTURE.md` | 구조, API, 데이터, 보안 경계 |
+| `UI_SPEC.md` | 화면, 토큰, 문구, 창·작업표시줄 |
+| `YOUTUBE_OPS.md` | 개발 실행, 시험, 빌드, 설치, 복원 부록 |
 
-**현재 레포 팩트:**
+빈 폴더에 위 4개만 있으면 `YOUTUBE_OPS.md` 부록으로 소스를 복원한다. `PROMPTS.md`는 없어도 복원된다.
 
-- 프론트는 `frontend/` (Next.js 16.3.5, React 19, Tailwind v4, Framer Motion).
-- `page.tsx` Inspect는 Unsplash 더미, `DownloadButton.tsx`는 setInterval 목업.
-- `backend/`는 아직 없다. Phase 1에서 생성한다.
-- `globals.css`에 `animate-shimmer`가 없다. Phase 2에서 `UI_SPEC.md` 토큰을 넣는다.
-- 임시 디렉터리는 `/tmp` 하드코딩이 아니라 `tempfile.gettempdir() / sonic_{job_id}` (Windows 호환).
+구현은 이미 레포에 있다. 백엔드를 새로 만들거나, Inspect/다운로드 목업을 실제 기능으로 바꾸는 단계는 끝났다. 그런 초기 지시를 다시 실행하지 않는다.
 
 ---
 
-### [Phase 1: 백엔드 다운로드 및 SSE 스트리밍 완성]
+## 0. 항상 지킬 일
+
+코드를 짜기 전에 **현재** `PRD.md`, `ARCHITECTURE.md`, `UI_SPEC.md`, `YOUTUBE_OPS.md`를 읽는다. 기억·이전 채팅보다 이 4종과 워킹 트리 코드를 우선한다.
+
+| 원칙 | 내용 |
+| :--- | :--- |
+| 화면 | 지금 사용자가 쓰는 폰트 토큰과 메인 3열을 유지한다. 문서 정리나 리팩터를 이유로 글자 크기·열 비율·검색 폼 배치를 바꾸지 않는다. 값은 `UI_SPEC.md`가 정본이다. |
+| 사용자 데이터 | `.env` 실키, 쿠키, `data/`, `profile/`, 받은 영상, 저장 폴더를 지우거나 커밋하거나 ZIP/문서/채팅에 넣지 않는다. 설치·제거 스크립트는 `data`/`profile`/`.env`를 보존한다. |
+| 비밀 | `OPENAI_API_KEY` 실값을 출력·로그·커밋하지 않는다. |
+| 정직한 보고 | 코드를 읽은 것과 실제로 실행·클릭해 본 것을 나눈다. 시험하지 않은 배율·모니터·다른 PC·작업표시줄을 검증 완료로 쓰지 않는다. |
+| 문서와 코드 | 둘이 어긋나면 추측으로 코드를 맞추지 않는다. 먼저 4종 문서를 코드에 맞추거나, 차이와 근거를 보고한다. |
+| 공개 배포 | GitHub Release 업로드, Vercel 배포, `SONICSTREAM_UPLOAD_RELEASE=1`은 **사용자가 이번 요청에서 명시했을 때만** 한다. ZIP을 로컬에 만드는 것과 공개하는 것을 섞지 않는다. |
+| 사이트 ≠ 엔진 | Vercel/Render에서 YouTube를 받는다고 쓰지 않는다. |
+
+와이어 주의(구현 유지): UI prop 이름은 `format`이어도 `POST /api/download` 바디는 `{ url, type, quality }`다.
+
+---
+
+## 1. 모든 작업의 시작
+
+아래를 작업 프롬프트 **앞에** 붙인다.
 
 ```text
-Read PRD.md and ARCHITECTURE.md.
-Look at /backend/main.py (create backend/ if it does not exist).
+프로젝트: C:\AICODING\sonic-stream (또는 사용자가 연 워크스페이스)
 
-Implement the full production-ready download and streaming pipeline:
-1. Update POST /api/inspect to reliably return video title, author, duration, and thumbnail using yt-dlp.
-   - Validate URL. Reject live streams with code LIVE_STREAM.
-   - Use skip_download / extract_flat first; fall back to extract_info(download=False) if metadata is thin.
-   - Normalize duration to MM:SS or HH:MM:SS. Prefer highest-resolution thumbnail.
-   - Return the exact JSON contract in ARCHITECTURE.md. Errors use { code, message }.
-2. Implement POST /api/download that accepts { url, type, quality }, generates a unique job_id (uuid4), and starts a background thread/async task.
-   - type: "video" | "audio"
-   - quality: "1080p" | "4k" | "320k" | "flac"
-   - Respond 202 { job_id }. Do not block the event loop on yt-dlp.
-3. In the background task, run yt-dlp with the exact format/postprocessor settings specified in ARCHITECTURE.md:
-   - For Video: merge 1080p/4K with best audio into MP4 container, movflags +faststart.
-   - For Audio 320k: extract 320k MP3 using FFmpegExtractAudio, embed thumbnail using EmbedThumbnail, inject ID3 metadata via FFmpegMetadata, writethumbnail=True. Convert webp thumbs to jpg if needed.
-   - For Audio flac: FFmpegExtractAudio preferredcodec=flac + metadata + EmbedThumbnail.
-   - Write into tempfile.gettempdir()/sonic_{job_id}/ (never hardcode POSIX-only /tmp on Windows).
-   - Attach a yt-dlp progress_hook that publishes { percent, speed, eta, status } to an in-memory queue/dict keyed by job_id.
-   - When yt-dlp finishes download and postprocessors start, set status=processing.
-4. Implement GET /api/progress/{job_id} using sse-starlette or raw EventSourceResponse (text/event-stream) to broadcast real-time metrics every 0.2s.
-   - Event progress: { status, percent, speed, eta }
-   - Event processing: { status, detail }
-   - When complete, emit event: 'complete' with download_url: '/api/fetch/{job_id}' (or absolute localhost:8000 URL).
-   - On failure emit event: 'error' with { status, code, message } from the PRD error table (429, geo, deleted, live, etc.).
-5. Implement GET /api/fetch/{job_id} to serve the processed file via FileResponse with proper filename attachment headers (filename + filename*), correct media_type, and schedule temporary file deletion immediately after send. Also sweep sonic_* dirs older than 10 minutes on startup and via a TTL.
-6. Add CORS for http://localhost:3000 and http://127.0.0.1:3000.
-Ensure all necessary python packages (fastapi, uvicorn, yt-dlp, sse-starlette) are in backend/requirements.txt.
-Do not implement the frontend in this phase.
+시작하기 전에 현재 PRD.md, ARCHITECTURE.md, UI_SPEC.md, YOUTUBE_OPS.md를 읽고
+워킹 트리 코드를 조사하세요. 이전 보고서나 기억만으로 쓰지 마세요.
+
+PROMPTS.md는 보조 문서입니다. 복원·포트·오류 코드·창 픽셀·설치 절차의 정본은
+위 4종입니다. 4종에 없는 동작을 구현된 것처럼 쓰지 마세요.
+
+유지 원칙:
+- 현재 폰트 토큰(--ss-body/title/button/tap)과 메인 3열을 유지합니다.
+- 사용자 .env, data/, profile/, 받은 파일을 삭제·커밋·첨부하지 않습니다.
+- 한 일과 시험하지 않은 일을 구분해 보고합니다.
+- 공개 Release/사이트 배포는 이 요청에 명시가 있을 때만 합니다.
+
+하지 말 것:
+- 백엔드가 없다, 목업을 실제 API로 바꾼다, Phase 1부터 새로 만든다.
+- Render/클라우드에서 YouTube 다운로드가 된다고 주장한다.
+- 설치 ZIP 없이 공개 업로드를 한다.
 ```
 
 ---
 
-### [Phase 2: 프론트엔드 모핑 버튼과 SSE 엔드투엔드 연결]
+## 2. 유지보수 · 작은 기능
+
+화면/엔진/패키징을 조금 고칠 때.
 
 ```text
-Read UI_SPEC.md, PRD.md, and ARCHITECTURE.md.
-Look at /frontend/src/components/DownloadButton.tsx, /frontend/src/components/MediaCard.tsx, /frontend/src/app/page.tsx, /frontend/src/app/globals.css, and /frontend/src/app/layout.tsx.
+[§1 시작 블록]
 
-Wire up the actual backend download flow and finish the visual spec:
-1. In page.tsx, remove the Unsplash/dummy mediaInfo simulation.
-   - Debounce URL input by 600ms, then POST http://localhost:8000/api/inspect { url }.
-   - On success show MediaCard with real title/author/duration/thumbnail.
-   - Abort in-flight inspect when the URL changes. Clear the card when the input is empty or inspect fails.
-   - Keep clipboard paste via navigator.clipboard.readText().
-2. In DownloadButton.tsx, replace the mock interval timer with real network calls. Add missing statuses: processing, error.
-   - On click: POST to http://localhost:8000/api/download with { url, type: format, quality } (wire field is type, not format).
-   - Receive job_id, switch status to 'downloading' (inspecting is allowed only as a brief pre-job state), and open an EventSource connection to http://localhost:8000/api/progress/{job_id}.
-   - On 'progress' event: update progress percentage, speed (MB/s), and ETA smoothly from the payload. No hardcoded 4.8 MB/s.
-   - On 'processing' event: lock the gauge at 95% and set status text to the server detail or the UI_SPEC FFmpeg/ID3 copy.
-   - On 'complete' event: trigger automatic browser file download by programmatically clicking a hidden <a> tag targeting data.download_url (prefix http://localhost:8000 if relative), then set status to 'completed'. Return to idle after 3 seconds (not 4).
-   - On error: handle gracefully, show rose-400 retry UI, allow retry. Always close EventSource on complete/error/unmount.
-3. Apply UI_SPEC.md Tailwind CSS v4 styling:
-   - Add @theme tokens, shimmer keyframes, and Obsidian #0B0C10 canvas in globals.css so animate-shimmer actually works.
-   - Update layout metadata to SonicStream and apply the dark canvas classes.
-   - Ensure button-to-gauge morphing animations run at 60fps without layout shifts (fixed h-14, AnimatePresence on labels only).
-   - completed uses emerald-400 glow + checkmark; error uses rose-400.
-Do not weaken the quality-only chip set (1080p/4K/320k/FLAC only).
+작업: (한 줄로 목적)
+
+범위:
+- 요청한 동작만 고칩니다. 리디자인, 광고, 저품질 칩, 메인 다중 라우팅을 넣지 않습니다.
+- AI 창 가드는 hasSavedOpenaiKey(ready|configured)입니다. ready만으로 되돌리지 않습니다.
+- 창은 UI_SPEC.md §2 작업 영역 규칙을 유지합니다.
+
+끝난 뒤:
+1. 바꾼 파일과 기본값/조건을 적습니다.
+2. 개발에서 실제로 확인한 경로와 확인하지 않은 경로를 나눕니다.
+3. 4종 문서와 어긋나면 문서를 코드에 맞출지, 이번엔 코드만인지 구분해 보고합니다.
+4. 설치 ZIP은 요청이 있을 때만 만듭니다. 시작하기.bat만으로 ZIP을 갱신했다고 쓰지 않습니다.
 ```
 
 ---
 
-### [Phase 3: 엔드투엔드 검증 및 엣지 케이스 방어]
+## 3. 오류 수정
+
+재현 가능한 버그.
 
 ```text
-Review both /frontend and /backend implementations against PRD.md, ARCHITECTURE.md, and UI_SPEC.md.
+[§1 시작 블록]
 
-1. Confirm CORS handling in backend for localhost:3000 and 127.0.0.1:3000.
-2. Verify that long video titles do not break the UI layout (truncate + title tooltip) or filename headers (sanitize + filename*).
-3. Test edge cases: invalid URLs, live streams, or geo-restricted videos should return clean error feedback to the user rather than hanging indefinitely. Map platform failures to PRD codes: INVALID_URL, UNSUPPORTED_URL, NOT_FOUND, GEO_RESTRICTED, RATE_LIMITED, LIVE_STREAM, JOB_NOT_FOUND, PROCESS_FAILED, TIMEOUT.
-4. Confirm GC: files live under tempfile.gettempdir()/sonic_{job_id}, delete after fetch and after a 10-minute TTL, sweep leftovers on startup.
-5. Confirm audio 320k writes ID3/cover via EmbedThumbnail + FFmpegMetadata, and video mux uses MP4 + faststart.
-6. Confirm the frontend never POSTs { format } to /api/download — only { url, type, quality }.
-7. Remove leftover mock timers, dummy thumbnails, and unused simulation state.
-8. Clean up any TypeScript lint warnings and Python typing warnings.
+증상: (사용자가 본 화면·메시지·조건)
+예상: (PRD/UI_SPEC 기준)
+실제: (지금 일어나는 일)
 
-If something is missing versus the three spec docs, implement it. Do not invent low-quality format options, ads, or installer prompts.
+순서:
+1. 추측으로 원인을 단정하지 마세요. 관련 파일·로그·API 응답을 확인합니다.
+2. 서로 다른 문제(창이 상태바에 가림 vs 메인이 뒤로 숨음 vs API 실패)를 하나로 묶지 않습니다.
+3. 수정은 재현을 없애는 최소 범위로 합니다.
+4. 가능하면 자동 시험(backend unittest)을 추가하거나 기존 시험을 돌립니다.
+   pytest는 requirements에 없습니다. python -m unittest 를 씁니다.
+5. UI를 고쳤으면 브라우저에서 해당 흐름을 끝까지 확인합니다. 스크린샷 한 장만으로 완료하지 않습니다.
+
+보고: 원인, 수정 파일, 재현 방법, 확인한 환경, 아직 안 본 환경.
 ```
 
 ---
 
-## 다음 단계 진행 방법
+## 4. 테스트
 
-1. 위 내용으로 4개의 마크다운 파일(`PRD.md`, `ARCHITECTURE.md`, `UI_SPEC.md`, `PROMPTS.md`)이 프로젝트 루트 `sonic-stream/`에 저장되어 있는지 확인한다.
-2. Cursor에서 `Ctrl + I`(Mac: `Cmd + I`)를 눌러 **Composer Agent**를 연다.
-3. `PROMPTS.md`의 **[Phase 1]** 프롬프트를 복사해 Composer에 바로 입력하면, Cursor가 백엔드 전체 파이프라인(SSE 스트리밍, FFmpeg 연동, ID3 썸네일 주입, 파일 다운로드, 자동 GC)을 구축한다.
-4. Phase 1이 끝나면 **[Phase 2]**로 프론트 모핑 버튼과 Inspect 디바운스를 실제 API에 연결한다.
-5. **[Phase 3]**으로 CORS, 긴 제목, 라이브/429/지리적 제한, 린트, 목업 잔존을 닫는다.
+코드 시험과 수동 확인을 섞을 때.
 
-Phase를 건너뛰지 않는다. 백엔드 없이 Phase 2를 실행하면 EventSource가 실패한다.
+```text
+[§1 시작 블록]
+
+자동:
+  cd backend
+  .\.venv\Scripts\python.exe -m unittest discover -s tests -q
+
+수동은 YOUTUBE_OPS.md §5 표의 상태 칸을 따릅니다.
+이미 예전에 한 시험을 이번에도 했다고 쓰지 마세요.
+
+구분해서 보고합니다:
+- 방금 실행한 unittest
+- 방금 브라우저/API로 확인한 항목
+- 코드만 읽은 항목
+- 다른 PC, 배율, 작업표시줄 실기, VERIFY_FAILED UI 등 미실시
+
+비밀 키를 시험 출력에 넣지 마세요. /api/status 주기 조회가 유료 OpenAI를 부르지 않는지
+문서와 코드를 확인하세요.
+```
+
+---
+
+## 5. MD 4종 · 소스 복원 부록 동기화
+
+기능/화면/창/설치 동작을 문서와 부록에 맞출 때. **설치 ZIP은 이 프롬프트만으로 만들지 않는다.**
+
+```text
+[§1 시작 블록]
+
+목적: 현재 워킹 트리(커밋 + 미커밋 + 미추적 소스)를 PRD/ARCHITECTURE/UI_SPEC/YOUTUBE_OPS에 빠짐없이 맞춥니다.
+설치 ZIP 빌드·공개 업로드·불필요한 프로그램 변경은 하지 마세요.
+
+순서:
+1. 실제 파일을 조사합니다. Git HEAD만 기준으로 삼지 않습니다.
+2. 구현 목록을 만들고 각 항목이 어느 MD 어느 절에 가는지 추적합니다.
+3. 큰 기능과 사소한 UI(문구, 여백, 창 위치, 음량 기본값)를 모두 적습니다.
+4. 네 문서의 역할을 유지하고 숫자를 길게 중복하지 않습니다. 정본을 정하고 상호 참조합니다.
+5. scripts/export-restore-bundle.ps1 으로 YOUTUBE_OPS.md 복원 부록을 다시 넣습니다.
+   옛 TAR 해시를 재사용하지 마세요. MD 자신을 부록에 넣지 마세요.
+   restore-from-md.ps1 은 부록 영역에서 표식을 찾고, 매니페스트 문제는 실패로 끝냅니다.
+   .env 실값, data/, profile/, dist/, node_modules, .venv는 제외합니다.
+6. 빈 폴더에 MD 4개만 복사해 부록을 추출하고, 복원 대상 전체 파일을 라이브 트리와 해시 비교합니다.
+   핵심 몇 개만 보고 통과시키지 마세요.
+7. 이번 단계의 통과 기준은 「추출 및 전체 파일 일치」입니다.
+   ZIP 빌드나 프로그램 실행을 하지 않았다면 그것을 통과했다고 쓰지 마세요.
+
+보고는 식별자(HEAD, source_fingerprint, TAR SHA, 파일 수), 반영표, 불일치, 미검증을 포함합니다.
+```
+
+---
+
+## 6. 설치 ZIP 빌드 · 검증
+
+다른 PC에 줄 설치본을 만들 때. 공개 업로드는 포함하지 않는다.
+
+```text
+[§1 시작 블록]
+
+목적: 현재 소스로 dist/SonicStream-Windows.zip 을 다시 만듭니다.
+공개 GitHub Release / Vercel 배포는 하지 마세요. SONICSTREAM_UPLOAD_RELEASE를 켜지 마세요.
+
+전제:
+- 화면·엔진을 방금 바꿨으면 4종 문서와 복원 부록이 같은 기준인지 먼저 확인합니다.
+- 시작하기.bat 은 ZIP을 갱신하지 않습니다.
+
+순서:
+1. 개발 확인(해당되면 unittest + 시작하기.bat 스모크).
+2. 다른PC에설치하기.bat (또는 scripts/package-windows.ps1).
+3. dist/last-package.json 의 source_fingerprint 가 현재 소스와 같은지 봅니다.
+4. ZIP 안 BUILD.json 이 같은 지문인지, ui/index.html, runtime/python, ffmpeg,
+   backend/app/ai_search.py, 한글 설치하기.bat / 실행하기.bat 이 있는지 봅니다.
+5. 가능하면 빈 폴더에 ZIP을 풀어 설치하기.bat 스모크를 합니다.
+   이 PC 개발 세션(:8000/:3000)을 설치본이라고 쓰지 마세요.
+
+보고: 지문, ZIP 경로·크기·SHA-256, 확인한 항목, 다른 PC/미실시 항목.
+사용자 .env 와 받은 파일을 ZIP에 넣지 않았는지 확인합니다.
+```
+
+---
+
+## 7. 공개 배포 (명시적 요청이 있을 때만)
+
+사용자가 「Release에 올려」, 「windows 태그를 갱신해」, 「사이트에 배포해」처럼 **분명히 요청한 경우만** 사용한다.
+
+```text
+[§1 시작 블록]
+
+사용자가 공개 배포를 요청했습니다. 로컬 ZIP만 만들고 끝내지 마세요.
+
+조건:
+- 먼저 §6과 같이 현재 소스로 ZIP을 만들고 지문을 확인합니다.
+- 업로드는 SONICSTREAM_UPLOAD_RELEASE=1 이고 gh 가 있을 때
+  scripts/package-windows.ps1 이 windows 태그에 올립니다.
+- 사이트(Vercel 등)는 설치 랜딩만입니다. 그 서버에 다운로드 엔진을 연결하지 않습니다.
+- 실키, 쿠키, 사용자 데이터를 릴리스 노트나 사이트에 넣지 않습니다.
+
+로컬 ZIP 성공과 업로드 성공을 한 문장으로 섞지 마세요.
+올리지 못했으면 실패 이유와 ZIP 경로만 보고합니다.
+```
+
+요청에 공개 배포가 없으면 이 절을 실행하지 않는다.
+
+---
+
+## 8. 쓰지 않는 지시 (초기 개발)
+
+아래는 **과거 부트스트랩**이다. 현재 실행 지침이 아니다. 복사해 다시 돌리지 않는다.
+
+- `backend/`가 없다. Phase 1에서 생성한다.
+- `page.tsx` Inspect는 Unsplash 더미, `DownloadButton`은 setInterval 목업이다.
+- `globals.css`에 shimmer가 없다. Phase 2에서 토큰을 넣는다.
+- 백엔드 없이 Phase 2를 하면 EventSource가 실패하니 Phase를 건너뛰지 않는다.
+- 4개 마크다운이 `PRD`, `ARCHITECTURE`, `UI_SPEC`, `PROMPTS`뿐이고 `YOUTUBE_OPS.md`가 없다.
+
+지금 레포에는 FastAPI 엔진, 로컬 저장, 검색/AI/대본, 데스크톱 패키징, 작업 영역 창 처리가 있다. 세부 값은 4종 MD를 본다.

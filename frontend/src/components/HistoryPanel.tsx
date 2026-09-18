@@ -7,6 +7,7 @@ import { qualityLabel } from '@/lib/constants';
 import type { DownloadHistoryItem, HistoryStatus } from '@/types/history';
 import {
   clearHistory,
+  getServerHistorySnapshot,
   hydrateHistoryFromPc,
   loadHistory,
   removeHistoryItem,
@@ -41,7 +42,7 @@ function statusLabel(status?: HistoryStatus): string {
 }
 
 export default function HistoryPanel({ onRestore, onRedownload, localReady }: HistoryPanelProps) {
-  const items = useSyncExternalStore(subscribeHistory, loadHistory, () => []);
+  const items = useSyncExternalStore(subscribeHistory, loadHistory, getServerHistorySnapshot);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | HistoryStatus>('all');
 

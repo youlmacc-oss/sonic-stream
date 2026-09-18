@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "package-fingerprint.ps1")
 if (-not (Test-Path (Join-Path $Root "backend\main.py"))) {
     $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
     $Root = Split-Path -Parent $Root
@@ -18,6 +19,17 @@ function Test-Port([int]$Port) {
 
 Write-Host "SonicStream 내 PC 다운로드를 준비합니다."
 Write-Host "프로젝트: $Root"
+Write-Host "이 실행은 개발용입니다. 설치 ZIP은 만들지 않습니다."
+try {
+    $fp = Get-SonicStreamSourceFingerprint -Root $Root
+    if (-not (Test-SonicStreamPackageFresh -Root $Root -Fingerprint $fp)) {
+        Write-Host "경고: 설치 ZIP이 현재 소스와 다릅니다. 다른 PC에 주려면 다른PC에설치하기.bat을 다시 실행하세요."
+    } else {
+        Write-Host "설치 ZIP 지문이 현재 소스와 같습니다."
+    }
+} catch {
+    Write-Host "설치 ZIP 지문을 비교하지 못했습니다. 배포 전에 다른PC에설치하기.bat을 실행하세요."
+}
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Test-Path $VenvPython)) {
     Write-Host "Python이 필요합니다. https://www.python.org/downloads/ 에서 설치한 뒤 다시 실행해 주세요."

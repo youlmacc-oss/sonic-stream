@@ -152,7 +152,10 @@ class EventLogTests(unittest.TestCase):
                 Path(self.opts["outtmpl"]).parent.mkdir(parents=True, exist_ok=True)
                 (Path(self.opts["outtmpl"]).parent / "ok.mp4").write_bytes(b"data")
 
-        with patch("app.ytdlp_engine.YoutubeDL", FakeYDL), patch.object(self.store, "_append", side_effect=OSError("disk")):
+        with patch("app.ytdlp_engine.YoutubeDL", FakeYDL), patch.object(self.store, "_append", side_effect=OSError("disk")), patch(
+            "app.ytdlp_engine.evaluate_saved_media",
+            return_value={"ok": True, "code": None, "probe": {"width": 1280, "height": 720}, "file_bytes": 4},
+        ):
             run_download("job-write", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "video", "1080p")
         self.assertEqual(store.get("job-write").status, "done")
 

@@ -33,6 +33,13 @@ USER_MESSAGES: dict[str, str] = {
     "UNKNOWN": "원인을 특정할 수 없습니다. 다시 시도해 주세요.",
     "NOT_READY": "파일이 아직 준비되지 않았습니다.",
     "BUSY": "다른 다운로드가 진행 중입니다. 잠시 후 다시 시도해 주세요.",
+    "AI_UNAVAILABLE": "AI 검색을 쓰려면 OpenAI 키를 이 컴퓨터에 넣어 주세요.",
+    "AI_FAILED": "AI 검색을 끝내지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    "VERIFY_FAILED": "받은 파일이 손상되었거나 필요한 영상이 없습니다.",
+    "VERIFY_UNAVAILABLE": "파일 검사를 할 수 없어 완료로 저장하지 않았습니다.",
+    "CANCELLED": "받기를 취소했습니다.",
+    "FORBIDDEN": "허용되지 않은 경로입니다.",
+    "LOCAL_ONLY": "이 프로그램은 이 PC에 설치해서 사용합니다.",
 }
 
 STATUS_BY_CODE: dict[str, int] = {
@@ -65,6 +72,13 @@ STATUS_BY_CODE: dict[str, int] = {
     "UNKNOWN": 500,
     "NOT_READY": 409,
     "BUSY": 429,
+    "AI_UNAVAILABLE": 503,
+    "AI_FAILED": 502,
+    "VERIFY_FAILED": 422,
+    "VERIFY_UNAVAILABLE": 503,
+    "CANCELLED": 409,
+    "FORBIDDEN": 403,
+    "LOCAL_ONLY": 409,
 }
 
 TERMINAL_CODES = {
@@ -79,6 +93,9 @@ TERMINAL_CODES = {
     "PROXY_AUTH",
     "FFMPEG_FAILED",
     "ROUTE_CONFIG",
+    "VERIFY_FAILED",
+    "VERIFY_UNAVAILABLE",
+    "CANCELLED",
 }
 
 WAIT_CODES = {"RATE_LIMITED"}

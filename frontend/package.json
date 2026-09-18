@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npx --yes tsx --test src/utils/historySnapshot.test.ts src/utils/historyStorage.test.ts src/lib/appShell.test.ts"
   },
   "dependencies": {
     "canvas-confetti": "^1.9.4",

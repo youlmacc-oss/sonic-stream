@@ -7,12 +7,13 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadCancelled
@@ -20,7 +21,7 @@ from yt_dlp.utils import DownloadCancelled
 from app.classify import classify_error
 from app.diagnostics import diagnostic_record, mask_text
 from app.errors import MESSAGES
-from app.local_runtime import is_local, probe_media, promote_local_file, runtime_location
+from app.local_runtime import evaluate_saved_media, is_local, promote_local_file, runtime_location
 from app.quality import describe_resolution, orientation_of, select_download_format, video_format_selector
 from app.gc import delete_job_dir, job_dir_for
 from app.jobs import store
@@ -80,11 +81,46 @@ def canonicalize_media_url(url: str) -> str:
     return url
 
 
+def _youtube_id_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host.endswith("youtu.be"):
+        return parsed.path.strip("/").split("/")[0] or None
+    if "youtube.com" not in host:
+        return None
+    query_id = (parse_qs(parsed.query).get("v") or [""])[0]
+    if query_id:
+        return query_id
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() in {"shorts", "embed", "live", "v"}:
+        return parts[1]
+    return None
+
+
 def validate_url(url: str) -> str:
     cleaned = url.strip()
     if not URL_RE.match(cleaned):
         raise ValueError("INVALID_URL")
+    video_id = _youtube_id_from_url(cleaned)
+    if video_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise ValueError("INVALID_URL")
     return cleaned
+
+
+def info_has_audio(info: dict[str, Any]) -> bool | None:
+    formats = info.get("formats")
+    if not isinstance(formats, list) or not formats:
+        acodec = str(info.get("acodec") or "")
+        if acodec and acodec != "none":
+            return True
+        return None
+    for item in formats:
+        if not isinstance(item, dict):
+            continue
+        acodec = str(item.get("acodec") or "")
+        if acodec and acodec != "none":
+            return True
+    return False
 
 
 def validate_combo(media_type: MediaType, quality: MediaQuality) -> None:
@@ -220,6 +256,49 @@ def base_ydl_opts(
     return opts
 
 
+def _korean_view_count(count: int) -> str:
+    if count >= 100_000_000:
+        value = count / 100_000_000
+        return f"{value:.1f}".rstrip("0").rstrip(".") + "억회"
+    if count >= 10_000:
+        value = count / 10_000
+        text = f"{int(value)}만회" if value >= 100 else f"{value:.1f}".rstrip("0").rstrip(".") + "만회"
+        return text
+    if count >= 1_000:
+        value = count / 1_000
+        return f"{value:.1f}".rstrip("0").rstrip(".") + "천회"
+    return f"{count}회"
+
+
+def format_view_count(value: object) -> str:
+    if value in (None, "", 0, "0"):
+        return ""
+    if isinstance(value, str):
+        text = " ".join(value.split())
+        if re.search(r"조회수\s*없음|no views|hidden", text, re.I):
+            return ""
+        compact = text.replace(" ", "")
+        labeled = re.search(r"([\d.,]+[만천억]회)", compact)
+        if labeled:
+            return labeled.group(1)
+        english = re.search(r"([\d.,]+)\s*([KMB])\s*views?", text, re.I)
+        if english:
+            amount = float(english.group(1).replace(",", ""))
+            factor = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[english.group(2).upper()]
+            return _korean_view_count(int(amount * factor))
+        digits = re.sub(r"[^\d]", "", text)
+        if not digits:
+            return ""
+        return _korean_view_count(int(digits))
+    try:
+        count = int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if count <= 0:
+        return ""
+    return _korean_view_count(count)
+
+
 def format_duration(seconds: object) -> str:
     if seconds is None:
         return "00:00"
@@ -343,6 +422,408 @@ def inspect_to_response(info: dict[str, Any]) -> InspectResponse:
         orientation=orientation_of(width, height),
         webpage_url=str(info.get("webpage_url") or "") or None,
     )
+
+
+def normalize_search_query(raw: str) -> str:
+    text = " ".join((raw or "").split())
+    if not text or len(text) > 80:
+        raise ValueError("INVALID_URL")
+    if "\x00" in text:
+        raise ValueError("INVALID_URL")
+    return text
+
+
+YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Same filter youtube.com uses for results?sp=EgIQAQ%3D%3D (동영상 only).
+YOUTUBE_SEARCH_VIDEO_PARAMS = "EgIQAQ=="
+_SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SEARCH_CACHE_LOCK = threading.Lock()
+_SEARCH_CACHE_TTL_SEC = 90.0
+_SEARCH_CACHE_MAX = 32
+
+
+def _search_cache_key(query: str, limit: int) -> str:
+    return f"{limit}:{query}"
+
+
+def _search_cache_get(query: str, limit: int) -> dict[str, Any] | None:
+    key = _search_cache_key(query, limit)
+    with _SEARCH_CACHE_LOCK:
+        item = _SEARCH_CACHE.get(key)
+        if item is None:
+            return None
+        stamped, payload = item
+        if time.monotonic() - stamped > _SEARCH_CACHE_TTL_SEC:
+            _SEARCH_CACHE.pop(key, None)
+            return None
+        return {"query": payload["query"], "items": list(payload["items"])}
+
+
+def _search_cache_put(query: str, limit: int, payload: dict[str, Any]) -> None:
+    key = _search_cache_key(query, limit)
+    with _SEARCH_CACHE_LOCK:
+        _SEARCH_CACHE[key] = (time.monotonic(), {"query": payload["query"], "items": list(payload["items"])})
+        if len(_SEARCH_CACHE) > _SEARCH_CACHE_MAX:
+            oldest = min(_SEARCH_CACHE, key=lambda name: _SEARCH_CACHE[name][0])
+            _SEARCH_CACHE.pop(oldest, None)
+
+
+def _innertube_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    simple = value.get("simpleText") or value.get("content")
+    if simple:
+        return str(simple).strip()
+    runs = value.get("runs")
+    if isinstance(runs, list):
+        return "".join(str(part.get("text") or "") for part in runs if isinstance(part, dict)).strip()
+    return ""
+
+
+def _is_watch_id(value: object) -> bool:
+    return bool(YOUTUBE_VIDEO_ID_RE.fullmatch(str(value or "").strip()))
+
+
+def _thumb_and_duration(node: object) -> tuple[str, str]:
+    thumb = ""
+    duration = ""
+
+    def walk(obj: object) -> None:
+        nonlocal thumb, duration
+        if isinstance(obj, dict):
+            url = obj.get("url")
+            if not thumb and isinstance(url, str) and "ytimg.com" in url:
+                thumb = url
+            badge = obj.get("thumbnailBadgeViewModel")
+            if not duration and isinstance(badge, dict):
+                duration = _innertube_text(badge.get("text"))
+            for child in obj.values():
+                walk(child)
+        elif isinstance(obj, list):
+            for child in obj:
+                walk(child)
+
+    walk(node)
+    return thumb, duration
+
+
+def _hit_from_parts(
+    video_id: str,
+    title: str,
+    author: str,
+    thumbnail: str,
+    duration: str,
+    views: str = "",
+) -> dict[str, Any] | None:
+    if not _is_watch_id(video_id):
+        return None
+    return {
+        "title": (title or "").strip() or video_id,
+        "author": (author or "").strip() or "Unknown",
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "thumbnail": thumbnail or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+        "duration": duration,
+        "duration_known": bool(duration),
+        "views": views,
+    }
+
+
+def search_hits_from_innertube(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(hit: dict[str, Any] | None) -> None:
+        if hit is None or hit["url"] in seen:
+            return
+        seen.add(hit["url"])
+        items.append(hit)
+
+    def from_video_renderer(renderer: dict[str, Any]) -> None:
+        thumbs = renderer.get("thumbnail")
+        thumb_url = ""
+        if isinstance(thumbs, dict):
+            sources = thumbs.get("thumbnails")
+            if isinstance(sources, list) and sources and isinstance(sources[-1], dict):
+                thumb_url = str(sources[-1].get("url") or "")
+        author = (
+            _innertube_text(renderer.get("ownerText"))
+            or _innertube_text(renderer.get("longBylineText"))
+            or _innertube_text(renderer.get("shortBylineText"))
+        )
+        add(
+            _hit_from_parts(
+                str(renderer.get("videoId") or ""),
+                _innertube_text(renderer.get("title")),
+                author,
+                thumb_url,
+                _innertube_text(renderer.get("lengthText")),
+                format_view_count(
+                    _innertube_text(renderer.get("shortViewCountText"))
+                    or _innertube_text(renderer.get("viewCountText"))
+                ),
+            )
+        )
+
+    def from_lockup(model: dict[str, Any]) -> None:
+        meta = model.get("metadata") if isinstance(model.get("metadata"), dict) else {}
+        lockup = meta.get("lockupMetadataViewModel") if isinstance(meta, dict) else {}
+        title = ""
+        author = ""
+        views = ""
+        if isinstance(lockup, dict):
+            title = _innertube_text(lockup.get("title"))
+            rows_wrap = lockup.get("metadata") if isinstance(lockup.get("metadata"), dict) else {}
+            rows_model = rows_wrap.get("contentMetadataViewModel") if isinstance(rows_wrap, dict) else {}
+            parts: list[str] = []
+            for row in (rows_model or {}).get("metadataRows") or []:
+                if not isinstance(row, dict):
+                    continue
+                for part in row.get("metadataParts") or []:
+                    if not isinstance(part, dict):
+                        continue
+                    text = _innertube_text(part.get("text"))
+                    if text:
+                        parts.append(text)
+            author = parts[0] if parts else ""
+            for text in parts[1:]:
+                maybe = format_view_count(text)
+                if maybe:
+                    views = maybe
+                    break
+        thumb, duration = _thumb_and_duration(model.get("contentImage"))
+        add(_hit_from_parts(str(model.get("contentId") or ""), title, author, thumb, duration, views))
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            renderer = obj.get("videoRenderer")
+            if isinstance(renderer, dict):
+                from_video_renderer(renderer)
+                return
+            lockup = obj.get("lockupViewModel")
+            if isinstance(lockup, dict):
+                from_lockup(lockup)
+                return
+            reel = obj.get("reelItemRenderer")
+            if isinstance(reel, dict):
+                add(
+                    _hit_from_parts(
+                        str(reel.get("videoId") or ""),
+                        _innertube_text(reel.get("headline")),
+                        "",
+                        "",
+                        "",
+                    )
+                )
+                return
+            for child in obj.values():
+                walk(child)
+        elif isinstance(obj, list):
+            for child in obj:
+                walk(child)
+
+    walk(payload)
+    return items
+
+
+SEARCH_RESULT_MAX = 30
+YTDLP_SEARCH_MAX = 20
+YTSEARCH_LIMIT = 12
+
+
+def _innertube_context() -> dict[str, Any]:
+    try:
+        from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+    except Exception:
+        INNERTUBE_CLIENTS = {}
+    meta = INNERTUBE_CLIENTS.get("web") if isinstance(INNERTUBE_CLIENTS, dict) else None
+    ctx = json.loads(json.dumps((meta or {}).get("INNERTUBE_CONTEXT") or {"client": {}}))
+    client = ctx.setdefault("client", {})
+    client["clientName"] = "WEB"
+    client["hl"] = "ko"
+    client["gl"] = "KR"
+    client.setdefault("clientVersion", "2.20260708.00.00")
+    return ctx
+
+
+def _innertube_post(body: dict[str, Any], query: str) -> dict[str, Any]:
+    ctx = body.get("context") if isinstance(body.get("context"), dict) else {}
+    client = ctx.get("client") if isinstance(ctx.get("client"), dict) else {}
+    request = urllib.request.Request(
+        "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            ),
+            "Origin": "https://www.youtube.com",
+            "Referer": f"https://www.youtube.com/results?search_query={quote(query)}",
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": str(client.get("clientVersion") or "2.20260708.00.00"),
+        },
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8", "replace"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def innertube_continuation_token(payload: dict[str, Any]) -> str | None:
+    found: list[str] = []
+
+    def walk(obj: object) -> None:
+        if found:
+            return
+        if isinstance(obj, dict):
+            command = obj.get("continuationCommand")
+            if isinstance(command, dict):
+                token = str(command.get("token") or "").strip()
+                if token:
+                    found.append(token)
+                    return
+            for child in obj.values():
+                walk(child)
+        elif isinstance(obj, list):
+            for child in obj:
+                walk(child)
+
+    walk(payload)
+    return found[0] if found else None
+
+
+def _merge_search_hits(items: list[dict[str, Any]], extra: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    seen = {str(item.get("url") or "") for item in items}
+    for hit in extra:
+        url = str(hit.get("url") or "")
+        if not url or url in seen:
+            continue
+        items.append(hit)
+        seen.add(url)
+        if len(items) >= limit:
+            break
+    return items[:limit]
+
+
+def search_via_innertube(query: str, limit: int) -> list[dict[str, Any]]:
+    ctx = _innertube_context()
+    payload = _innertube_post(
+        {"context": ctx, "query": query, "params": YOUTUBE_SEARCH_VIDEO_PARAMS},
+        query,
+    )
+    items = search_hits_from_innertube(payload)
+    if len(items) >= limit:
+        return items[:limit]
+    token = innertube_continuation_token(payload)
+    if not token:
+        return items[:limit]
+    try:
+        more = _innertube_post({"context": ctx, "continuation": token}, query)
+        items = _merge_search_hits(items, search_hits_from_innertube(more), limit)
+    except Exception as exc:
+        logger.info("Innertube continuation skipped: %s", exc)
+    return items[:limit]
+
+
+def search_ytsearch(query: str, limit: int = YTSEARCH_LIMIT) -> list[dict[str, Any]]:
+    cleaned = normalize_search_query(query)
+    count = max(1, min(int(limit or YTSEARCH_LIMIT), YTSEARCH_LIMIT))
+    opts = base_ydl_opts(use_impersonate=True, use_cookies=False)
+    opts.update(
+        {
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "noplaylist": False,
+            "playlistend": count,
+            "geo_bypass_country": "KR",
+        }
+    )
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{count}:{cleaned}", download=False) or {}
+    return search_hits_from_info(info)[:count]
+
+
+def search_via_ytdlp(query: str, limit: int) -> list[dict[str, Any]]:
+    opts = base_ydl_opts(use_impersonate=True, use_cookies=False)
+    opts.update(
+        {
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "noplaylist": False,
+            "playlistend": limit,
+            "geo_bypass_country": "KR",
+        }
+    )
+    last_error: Exception | None = None
+    for target in (
+        f"ytsearch{limit}:{query}",
+        f"https://www.youtube.com/results?search_query={quote(query)}",
+    ):
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target, download=False) or {}
+            hits = search_hits_from_info(info)
+            if hits:
+                return hits[:limit]
+        except Exception as exc:
+            last_error = exc
+            logger.info("yt-dlp search miss via %s: %s", target[:48], exc)
+    if last_error is not None:
+        logger.info("yt-dlp search exhausted: %s", last_error)
+    return []
+
+
+def search_hits_from_info(info: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for entry in info.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "").strip()
+        url = str(entry.get("webpage_url") or entry.get("url") or "").strip()
+        if video_id and len(video_id) == 11:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+        elif url.startswith("http") and YOUTUBE_ID_RE.search(url):
+            url = canonicalize_media_url(url)
+        if not url.startswith("http"):
+            continue
+        duration_raw = entry.get("duration")
+        duration_known = duration_raw not in (None, "", 0, "0")
+        items.append(
+            {
+                "title": str(entry.get("title") or url),
+                "author": pick_author(entry),
+                "url": url,
+                "thumbnail": pick_thumbnail(entry) or (f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg" if video_id else ""),
+                "duration": format_duration(duration_raw) if duration_known else "",
+                "duration_known": bool(duration_known),
+                "views": format_view_count(entry.get("view_count") or entry.get("views")),
+            }
+        )
+    return items
+
+
+def search_videos(query: str, limit: int = 30) -> dict[str, Any]:
+    cleaned = normalize_search_query(query)
+    count = max(1, min(int(limit or 30), SEARCH_RESULT_MAX))
+    cached = _search_cache_get(cleaned, count)
+    if cached is not None:
+        return cached
+    items: list[dict[str, Any]] = []
+    try:
+        items = search_via_innertube(cleaned, count)
+    except Exception as exc:
+        logger.info("Innertube search failed: %s", exc)
+    if len(items) < 3:
+        fallback = search_via_ytdlp(cleaned, min(count, YTDLP_SEARCH_MAX))
+        if fallback:
+            items = fallback
+    result = {"query": cleaned, "items": items[:count]}
+    if items:
+        _search_cache_put(cleaned, count, result)
+    return result
 
 
 def inspect_url(url: str) -> InspectResponse:
@@ -546,8 +1027,29 @@ def media_type_for(path: Path) -> str:
 _FFMPEG_DIR: Path | None | bool = False
 
 
+def reset_ffmpeg_dir_cache() -> None:
+    global _FFMPEG_DIR
+    _FFMPEG_DIR = False
+
+
+def _ffmpeg_from_env() -> Path | None:
+    raw = (os.getenv("SONICSTREAM_FFMPEG_DIR") or os.getenv("FFMPEG_LOCATION") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_file() and path.name.lower().startswith("ffmpeg"):
+        return path.resolve().parent
+    binary = path / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if binary.is_file():
+        return path.resolve()
+    return None
+
+
 def resolve_ffmpeg_dir() -> Path | None:
     global _FFMPEG_DIR
+    env_dir = _ffmpeg_from_env()
+    if env_dir is not None:
+        return env_dir
     if _FFMPEG_DIR is not False:
         return _FFMPEG_DIR  # type: ignore[return-value]
 
@@ -562,9 +1064,9 @@ def resolve_ffmpeg_dir() -> Path | None:
         Path(r"C:\ffmpeg"),
     ]
     for root in extra_roots:
-        if not root.exists():
-            continue
         try:
+            if not root.exists():
+                continue
             match = next(root.glob("Gyan.FFmpeg*/**/bin/ffmpeg.exe"), None)
             if match is None:
                 match = next(root.rglob("ffmpeg.exe"), None)
@@ -770,13 +1272,23 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                 delivery = "browser"
                 probe: dict = {}
                 if is_local():
-                    saved = promote_local_file(output, filename)
+                    saved = promote_local_file(output, filename, job_id=job_id)
                     saved_path = str(saved)
-                    file_bytes = saved.stat().st_size
-                    probe = probe_media(saved, resolve_ffmpeg_dir())
-                    verified = bool(probe.get("ok")) and file_bytes > 0
-                    if media_type == "video" and not probe.get("has_video"):
-                        verified = False
+                    verdict = evaluate_saved_media(
+                        saved,
+                        media_type,
+                        source_has_audio=info_has_audio(info) if isinstance(info, dict) else None,
+                        ffmpeg_dir=resolve_ffmpeg_dir(),
+                    )
+                    probe = verdict.get("probe") or {}
+                    file_bytes = verdict.get("file_bytes") or saved.stat().st_size
+                    if not verdict.get("ok"):
+                        try:
+                            saved.unlink()
+                        except OSError:
+                            pass
+                        raise RuntimeError(str(verdict.get("code") or "VERIFY_FAILED"))
+                    verified = True
                     delivery = "local_file"
                 settled = store.settle(
                     job_id,
@@ -832,8 +1344,9 @@ def run_download(job_id: str, url: str, media_type: MediaType, quality: MediaQua
                 if str(exc) == "LIVE_STREAM":
                     classified_code, classified_message = "LIVE_STREAM", MESSAGES["LIVE_STREAM"]
                     retry_after = None
-                elif str(exc) == "PROCESS_FAILED":
-                    classified_code, classified_message = "PROCESS_FAILED", MESSAGES["PROCESS_FAILED"]
+                elif str(exc) in {"PROCESS_FAILED", "VERIFY_FAILED", "VERIFY_UNAVAILABLE"}:
+                    classified_code = str(exc)
+                    classified_message = MESSAGES.get(classified_code, MESSAGES["PROCESS_FAILED"])
                     retry_after = None
                 else:
                     classified = classify_error(exc, stage=stage)

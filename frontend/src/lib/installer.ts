@@ -2,8 +2,8 @@ import { getApiBase } from '@/lib/constants';
 import { isDeployedSite, isLoopbackHost } from '@/lib/site';
 
 export const TEST_RELEASE_TAG = 'windows-test';
-export const TEST_INSTALLER_FILENAME = 'SonicStream-Windows-7907a90f21c3.zip';
-export const TEST_BUILD_ID = '7907a90f21c3d958358a7cd993e918251f25ed56615020292b050d1fab156cd1';
+export const TEST_INSTALLER_FILENAME = 'SonicStream-Windows-024cf05c6fd8.zip';
+export const TEST_BUILD_ID = '024cf05c6fd84184085e3007658c393e1da44b8371864c355ec50af7c11e3ccc';
 export const TEST_INSTALLER_URL =
   process.env.NEXT_PUBLIC_TEST_INSTALLER_URL
   || `https://github.com/youlmacc-oss/sonic-stream/releases/download/${TEST_RELEASE_TAG}/${TEST_INSTALLER_FILENAME}`;

@@ -25,6 +25,10 @@ backend/logs/*.log
 backend/logs/backup_index.json
 backend/logs/snapshots/
 
+# Packaged desktop runtime
+dist/
+packaging/cache/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

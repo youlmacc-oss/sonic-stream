@@ -15,3 +15,5 @@ services:
         value: production
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: SONICSTREAM_INSTALLER_URL
+        value: https://github.com/youlmacc-oss/sonic-stream/releases/download/windows/SonicStream-Windows.zip

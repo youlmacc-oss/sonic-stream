@@ -1,22 +1,36 @@
-import type { DownloadHistoryItem } from '@/types/history';
-import { getApiBase } from '@/lib/constants';
+import type { DownloadHistoryItem } from '../types/history';
+import { getApiBase } from '../lib/constants';
+import { EMPTY_HISTORY, HistorySnapshotCache, isHistoryItem } from './historySnapshot';
 
 export const HISTORY_STORAGE_KEY = 'sonicstream.history.v1';
 export const ACTIVE_JOBS_KEY = 'sonicstream.activeJobs.v1';
 const MAX_ITEMS = 30;
 
-type HistoryListener = (items: DownloadHistoryItem[]) => void;
+type HistoryListener = (items?: DownloadHistoryItem[]) => void;
 
 const listeners = new Set<HistoryListener>();
+const snapshots = new HistorySnapshotCache();
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
 
+function onHistoryStorage(event: StorageEvent): void {
+  if (event.key !== null && event.key !== HISTORY_STORAGE_KEY) return;
+  notify(loadHistory());
+}
+
 export function subscribeHistory(listener: HistoryListener): () => void {
+  const start = listeners.size === 0;
   listeners.add(listener);
+  if (start && typeof window !== 'undefined') {
+    window.addEventListener('storage', onHistoryStorage);
+  }
   return () => {
     listeners.delete(listener);
+    if (listeners.size === 0 && typeof window !== 'undefined') {
+      window.removeEventListener('storage', onHistoryStorage);
+    }
   };
 }
 
@@ -24,16 +38,17 @@ function notify(items: DownloadHistoryItem[]): void {
   listeners.forEach((listener) => listener(items));
 }
 
+export function getServerHistorySnapshot(): DownloadHistoryItem[] {
+  return EMPTY_HISTORY;
+}
+
 export function loadHistory(): DownloadHistoryItem[] {
-  if (!canUseStorage()) return [];
+  if (!canUseStorage()) return snapshots.get();
   try {
     const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isHistoryItem).sort((a, b) => b.downloadedAt - a.downloadedAt);
+    return snapshots.readFromRaw(raw);
   } catch {
-    return [];
+    return snapshots.get();
   }
 }
 
@@ -61,16 +76,18 @@ export async function hydrateHistoryFromPc(): Promise<DownloadHistoryItem[]> {
 
 export function persistHistory(items: DownloadHistoryItem[], syncRemote = true): DownloadHistoryItem[] {
   const next = items.slice(0, MAX_ITEMS);
+  const raw = JSON.stringify(next);
   if (canUseStorage()) {
     try {
-      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, raw);
     } catch {
       // quota / private mode — keep in-memory result only
     }
   }
-  if (syncRemote) pushHistoryToPc(next);
-  notify(next);
-  return next;
+  const stored = snapshots.adopt(next, raw);
+  if (syncRemote) pushHistoryToPc(stored);
+  notify(stored);
+  return stored;
 }
 
 export function persistActiveJob(jobId: string, historyId: string) {
@@ -143,18 +160,6 @@ export function clearHistory(): DownloadHistoryItem[] {
   return persistHistory([]);
 }
 
-function isHistoryItem(value: unknown): value is DownloadHistoryItem {
-  if (!value || typeof value !== 'object') return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === 'string'
-    && typeof item.url === 'string'
-    && typeof item.title === 'string'
-    && typeof item.author === 'string'
-    && typeof item.thumbnail === 'string'
-    && typeof item.duration === 'string'
-    && (item.type === 'video' || item.type === 'audio')
-    && typeof item.quality === 'string'
-    && typeof item.downloadedAt === 'number'
-  );
+export function resetHistorySnapshotsForTests(): void {
+  snapshots.reset();
 }

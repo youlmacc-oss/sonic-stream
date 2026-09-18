@@ -1,447 +1,418 @@
-# Architecture Specification: SonicStream
+# SonicStream Architecture
 
-## 0. 스택과 디렉터리
+현재 워킹 트리의 구현 구조다. 제품 약속은 `PRD.md`, 화면은 `UI_SPEC.md`, 절차는 `YOUTUBE_OPS.md`.
 
-| Layer | 실제 스택 | 경로 |
+설치 ZIP은 이 구조의 스냅샷이다. 소스 변경 후 ZIP을 다시 만들지 않으면 다른 PC는 이전 구조로 동작한다 (`PRD.md` §1).
+
+문서 기준: `PRD.md` §0과 같다. Git HEAD `3130887ccb4f71ff90b793fe738bf4ec90608acd` + 미커밋/미추적 소스.
+
+---
+
+## 1. 한 장 요약
+
+```text
+[개발 PC]
+  시작하기.bat
+    → backend/.venv python -m uvicorn main:app --host 127.0.0.1 --port 8000
+    → frontend  npm run dev -- --hostname 127.0.0.1 --port 3000
+    → 브라우저 http://127.0.0.1:3000  (rewrites /api → 8000)
+
+[패키지 빌드 PC]  ← 프로그램이 바뀔 때마다
+  다른PC에설치하기.bat
+    → SONICSTREAM_STATIC=1  next build  → frontend/out
+    → embed Python 3.11.9 + pip + requirements (openai 포함)
+    → python*._pth 에 `..\..\backend` (내장 Python이 앱을 찾음)
+    → Node 22.19.0 node.exe
+    → FFmpeg essentials
+    → backend + ui/ + packaging/windows/*
+    → BUILD.json (source_fingerprint) + FILES.json (파일별 SHA-256)
+    → dist/SonicStream-Windows.zip
+    → %USERPROFILE%\Downloads\SonicStream\SonicStream-Windows.zip
+    → SONICSTREAM_UPLOAD_RELEASE=1 이고 gh 있을 때만 release tag `windows`
+
+[설치 PC]
+  설치하기.bat → %LOCALAPPDATA%\SonicStream
+  실행하기.bat → run-desktop.ps1
+       내장 python uvicorn :8011
+       SONICSTREAM_UI_DIR=...\ui
+       Edge/Chrome --app=http://127.0.0.1:8011/  (작업 영역 박스)
+
+[공개 사이트]
+  Vercel 등 frontend only → 설치 안내 + GitHub Release ZIP
+  YouTube 다운로드 없음
+```
+
+---
+
+## 2. 저장소 레이아웃
+
+```text
+sonic-stream/
+  PRD.md / ARCHITECTURE.md / UI_SPEC.md / YOUTUBE_OPS.md
+  시작하기.bat                 개발 실행. ZIP을 갱신하지 않음
+  다른PC에설치하기.bat         현재 소스 → 설치 ZIP
+  backend/
+    main.py                    FastAPI 앱
+    error_logger.py
+    models.py                  레거시/보조. 런타임 계약은 app.models
+    requirements.txt
+    .env.example               OPENAI_API_KEY=  (실키 금지)
+    .env                       gitignore. 이 PC만. 부록 제외
+    app/
+      models.py                Pydantic 계약
+      ytdlp_engine.py          inspect/download/search, YTSEARCH_LIMIT=12
+      ai_search.py             OpenAI + ytsearch, RESULT_LIMIT=12, MAX_PROMPT=400
+      transcript.py            자막/자동자막 json3/vtt
+      classify.py              에러 코드 → 한국어
+      desktop.py               작업 영역, 창 열기/포커스, Edge --app
+      installer.py             ZIP 위치/서빙
+      local_runtime.py         저장, probe, promote, 열기 권한
+      file_registry.py         data/file-registry.json (400)
+      history_store.py         data/history.json (30)
+      env_file.py              .env 읽기/쓰기 (키 로그 금지)
+      ui_static.py             패키지 UI /ai /help /install
+      quality.py               포맷 선택
+      jobs.py / gc.py / sse.py
+      youtube_auth.py          선택 쿠키
+      pot.py / runtime.py / policy.py / routes.py
+      errors.py
+  frontend/src/
+    app/page.tsx               메인 3열
+    app/ai/                    SonicStream AI
+    app/help/                  SonicStream 도움말
+    app/install/               SonicStream 설치
+    lib/workArea.ts            작업 영역 맞춤
+    lib/searchWindow.ts        창 열기, 검색/AI/대본, 다운로드 ACK
+    lib/apiStatus.ts           hasSavedOpenaiKey
+    components/...
+  scripts/
+    start-local.ps1
+    package-windows.ps1
+    package-fingerprint.ps1
+    export-restore-bundle.ps1
+    restore-from-md.ps1
+  packaging/windows/           ZIP에 그대로 들어감
+  dist/                        gitignore. 빌드 산출. 부록 제외
+```
+
+프론트 주요 파일:
+
+| 파일 | 역할 |
+| :--- | :--- |
+| `PreviewPane.tsx` | URL, 돋보기 일반검색, AI 검색 가드, 미리보기 |
+| `DownloadButton.tsx` | Inspect 연동 CTA, SSE, 완료 계약 |
+| `HistoryPanel.tsx` | localStorage + PC 이력 hydrate |
+| `DesktopSettings.tsx` | 폴더, API 키, 자동시작, 종료 |
+| `ApiStatus.tsx` | 8초 폴. 엔진 / OpenAI 점 |
+| `HelpGuide.tsx` | 도움말 본문 |
+| `InstallNeeded.tsx` / `InstallGuideWindow.tsx` | 배포 설치 안내 |
+| `WatchPlayer.tsx` | youtube-nocookie + IFrame API 음량/시크 |
+| `TranscriptPanel.tsx` | 대본 있음/없음/실패 |
+| `AiResultCard.tsx` | 바로보기 / 1080p / MP3 |
+| `MoreOnYoutube.tsx` | 「유튜브에서 더 찾기」 새 탭 |
+| `LocalFileActions.tsx` | 파일/폴더 열기, 경로 복사 |
+| `WindowControls.tsx` | 최소화 / 전체 / 조절창 |
+| `workArea.ts` | avail* + 자동숨김 48px |
+
+---
+
+## 3. 런타임 프로세스
+
+### 3.1 개발
+
+- `SONICSTREAM_LOCATION=local`
+- `ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:8000,http://localhost:8000`
+- `YOUTUBE_ALLOW_DIRECT=true`
+- `NEXT_PUBLIC_API_URL` 비움 → 상대 `/api`, Next rewrites → 8000
+- `SONICSTREAM_STATIC`를 개발 셸에 남기지 않는다 (남으면 rewrite가 깨짐)
+
+### 3.2 패키지 데스크톱
+
+`run-desktop.ps1`:
+
+- 포트 **8011 고정**. 다른 프로그램이 쓰면 실패. 개발 :8000을 재사용하지 않음
+- 이미 우리 엔진이면 창만 연다
+- `runtime/python/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8011`
+- `--app=` + `--user-data-dir=<설치폴더>/profile`
+- `Get-DesktopWindowBox 1280 800` → `--window-size` / `--window-position` (작업 영역, pad 16, chrome 48, 자동숨김이면 높이 −48)
+- `.env` 로드: 설치 루트 `.env` 다음 `backend/.env` (**항상 덮어씀**)
+- `SONICSTREAM_HOME` = 설치 루트
+
+중복 실행: 같은 `SONICSTREAM_HOME`의 엔진이 :8011에 있으면 창만. 다른 앱이 :8011이면 실패.
+
+### 3.3 정적 UI
+
+`ui_static.py` + `main.py`: `GET /` `/ai` `/help` `/install`, `/_next/static/*`. API는 같은 오리진.
+
+`SONICSTREAM_STATIC=1` → `next.config.ts` `output: "export"`. 패키지 UI는 루프백이라 `local` 3열. 공개 호스트는 `public` 설치 안내.
+
+### 3.4 환경 변수 로드 순서
+
+Python `env_file.load_dotenv_files` (기존 `os.environ`은 덮지 않음):
+
+1. `$SONICSTREAM_HOME/.env`
+2. `backend/.env`
+3. 레포 루트 `.env` (다를 때)
+
+허용 기록 키: `OPENAI_API_KEY`, `OPENAI_MODEL`.
+
+| 변수 | 기본 | 의미 |
 | :--- | :--- | :--- |
-| Frontend | Next.js **16.3.5** App Router, React 19.2, TypeScript, Tailwind CSS **v4** (`@import "tailwindcss"`), Framer Motion, lucide-react | `frontend/` |
-| Backend | FastAPI + Uvicorn, yt-dlp, FFmpeg 6.x / LAME, sse-starlette | `backend/` (신규 생성) |
-| Ephemeral Disk | `Path(tempfile.gettempdir()) / f"sonic_{job_id}"` | POSIX 관례: `/tmp/sonic_{job_id}` |
+| `OPENAI_API_KEY` | 비움 | 있으면 AI 가능 |
+| `OPENAI_MODEL` | `gpt-4o-mini` | |
+| `SONICSTREAM_LOCATION` | `local` | 로컬 저장 |
+| `SONICSTREAM_HOME` | 설치 루트 | data/ 위치 |
+| `SONICSTREAM_SAVE_DIR` | 없음 | 있으면 저장 폴더 우선 |
+| `SONICSTREAM_SETTINGS` | `%LOCALAPPDATA%\SonicStream\settings.json` | 폴더/자동시작 |
+| `SONICSTREAM_UI_DIR` | 설치본 `ui` | |
+| `SONICSTREAM_FFMPEG_DIR` | 설치본 `runtime/ffmpeg` | |
+| `SONICSTREAM_STATIC` | 패키지 빌드만 `1` | |
+| `SONICSTREAM_UPLOAD_RELEASE` | 비움 | `1`일 때만 gh 업로드 |
+| `NEXT_PUBLIC_API_URL` | 비움 | |
+| `NEXT_PUBLIC_INSTALLER_URL` | GitHub windows ZIP | |
+| `ALLOWED_ORIGINS` | 모드별 | CORS |
+| `YOUTUBE_ALLOW_DIRECT` | `true` | |
+| `ADMIN_TOKEN` / `DEBUG_BACKLOG_TOKEN` | 비움 | 없으면 `/api/debug/*` 404 |
 
-프론트 개발 서버는 `http://localhost:3000`, 백엔드는 `http://localhost:8000`이다. 브라우저는 백엔드를 **직접** 호출한다. 프론트에서 Next.js rewrite로 감싸지 않는 것이 기본이다.
+---
 
-권장 백엔드 레이아웃:
+## 4. HTTP API
+
+베이스: 개발 `http://127.0.0.1:8000`, 패키지 `http://127.0.0.1:8011`.
+
+권한:
+
+- **공개**: Host 제한 없음 (사이트가 호출해도 엔진이 없으면 실패)
+- **trusted**: `is_local()`이면 루프백 Host/Origin
+- **local+loopback**: `require_local_desktop`. 아니면 403/404
+- **admin**: `X-Admin-Token` = `ADMIN_TOKEN` 또는 `DEBUG_BACKLOG_TOKEN`. 미설정 404, 불일치 401
+
+| Method | Path | 권한 | 역할 |
+| :--- | :--- | :--- | :--- |
+| GET | `/health` | 공개 | `{status, service, commit}` |
+| GET | `/version` | 공개 | 버전, yt-dlp |
+| GET | `/api/status` | 공개 | engine/search/openai. **FFmpeg 없음**. 주기 폴은 유료 API를 부르지 않음. openai: `ready`/`configured`/`no_key`/`no_sdk`/`key_error`/`quota_error`/`network_error`/`down` |
+| GET | `/api/runtime` | 공개 | location, save_dir, **ffmpeg**, home, openai, installer |
+| POST | `/api/inspect` | 공개 | 메타 |
+| POST | `/api/download` | trusted + **local만** | 202 `{job_id}`. 서버 모드면 `LOCAL_ONLY` |
+| GET | `/api/progress/{job_id}` | 공개 | SSE |
+| GET | `/api/fetch/{job_id}` | 공개 | 브라우저 전송(데스크톱 기본은 로컬 저장) |
+| GET | `/api/jobs/{job_id}` | 공개 | 상태. `verified`, `saved_path`, `delivery` |
+| POST | `/api/jobs/{job_id}/cancel` | trusted | 취소 |
+| POST | `/api/search` | 공개 | `{query, limit}`. 엔진 상한 12 |
+| POST | `/api/ai-search` | local+loopback | `{prompt, history[]}`. 키 없으면 `AI_UNAVAILABLE` |
+| POST | `/api/transcript` | 공개 | `{url}` |
+| GET/POST | `/api/local/settings` | local | 폴더, autostart, openai_api_key |
+| POST | `/api/local/pick-folder` | local | 폴더 대화상자. 취소 `{ok:false, cancelled:true}` |
+| POST | `/api/local/open` | local | `{path, action: file\|folder\|stat}` |
+| POST | `/api/local/window` | local | `open_main` \| `minimize` \| `maximize` \| `restore` |
+| GET/POST | `/api/local/history` | local | `{items}` 최대 30 |
+| POST | `/api/local/shutdown` | local | 약 0.4초 후 프로세스 종료 |
+| GET | `/api/desktop/installer` | 조건 | ZIP 또는 307 |
+| GET | `/api/desktop/installer/info` | 공개 | URL/용량 |
+| GET | `/api/desktop/setup` | 공개 | `SonicStream-설치.bat` |
+| GET | `/ai` `/help` `/install` | 정적 | 별도 창 |
+| GET | `/api/debug/*` | admin | backlog, events, bundle, status. 비밀 마스킹 |
+
+루프백이 아닌 Host로 `/api/local/*` 또는 `open_main` URL을 열면 거부. 테스트: `desktop._safe_loopback_app_url`.
+
+OpenAI 상태:
+
+- `no_key`: 키 없음
+- `configured`: 키는 저장됨. 상태 폴은 검증 호출을 하지 않음
+- `ready`: 검증 성공(저장하고 연결)
+- 프론트 `hasSavedOpenaiKey` = `ready` \| `configured`
+
+---
+
+## 5. 백엔드 모듈
+
+| 모듈 | 책임 |
+| :--- | :--- |
+| `ytdlp_engine` | URL 검증, extract, format, `search_ytsearch` 상한 12, sanitize |
+| `ai_search` | 키/모델, 프롬프트 400자, 키워드 2, `connection_status` |
+| `transcript` | subtitles/automatic_captions, json3/vtt |
+| `desktop` | 작업 영역, `--app`, EnumWindows, ForceFront |
+| `local_runtime` | 저장 경로, `unique_dest`, probe, promote, 열기 |
+| `file_registry` | 경로 등록 400, 예전 폴더 허용 |
+| `history_store` | history.json 30 |
+| `installer` | 레포 `dist/` 또는 설치본 옆 ZIP |
+| `env_file` | dotenv. 로그에 키 금지 |
+| `gc` / `jobs` | `sonic_{job_id}`, 10분 TTL |
+| `youtube_auth` | 쿠키 경로가 있을 때만 |
+| `classify` | 코드→한국어 |
+
+다운로드 파이프라인:
+
+1. job, temp dir
+2. yt-dlp 포맷
+3. SSE (약 200ms)
+4. FFmpeg mux 또는 오디오 + ID3
+5. `evaluate_saved_media` — 빈 파일 `PROCESS_FAILED`, ffprobe 없음 `VERIFY_UNAVAILABLE`, 스트림 불량 `VERIFY_FAILED`
+6. local이면 promote + registry + complete(`verified=true`)
+7. GC
+
+검색: `normalize_search_query` → `search_ytsearch(limit=12)`. AI는 OpenAI JSON 후 키워드별 검색을 12건으로 자름.
+
+`USER_MESSAGES` 전체 키: `INVALID_URL`, `UNSUPPORTED_URL`, `FORMAT_UNAVAILABLE`, `ROUTE_CONFIG`, `ROUTE_COOL`, `NOT_FOUND`, `GEO_RESTRICTED`, `RATE_LIMITED`, `BOT_CHECK`, `LOGIN_REQUIRED`, `COOKIE_INVALID`, `POT_MISSING`, `POT_FAILED`, `JS_RUNTIME`, `EXTRACT_FAILED`, `STREAM_FORBIDDEN`, `STREAM_EXPIRED`, `PROXY_AUTH`, `PROXY_CONNECT`, `NETWORK_ERROR`, `TIMEOUT`, `LIVE_STREAM`, `AGE_RESTRICTED`, `JOB_NOT_FOUND`, `PROCESS_FAILED`, `FFMPEG_FAILED`, `UNKNOWN`, `NOT_READY`, `BUSY`, `AI_UNAVAILABLE`, `AI_FAILED`, `VERIFY_FAILED`, `VERIFY_UNAVAILABLE`, `CANCELLED`, `FORBIDDEN`, `LOCAL_ONLY`.
+
+문구 정본은 코드. 자주 쓰는 항목은 `PRD.md` §8.
+
+---
+
+## 6. 프론트 데이터 흐름
 
 ```text
-backend/
-  main.py              # FastAPI app, CORS, routers, lifespan GC sweep
-  requirements.txt     # fastapi, uvicorn, yt-dlp, sse-starlette
-  app/
-    models.py          # Pydantic: InspectRequest, DownloadRequest, error payloads
-    jobs.py            # In-memory JobStore + asyncio/thread worker
-    ytdlp_engine.py    # inspect + download opts + progress_hook
-    sse.py             # EventSourceResponse / 200ms ticker
-    gc.py              # immediate + 10-minute sweep
+page.tsx
+  shell = useSyncExternalStore(appShell) → boot | public | local
+  boot: 준비 화면(서버와 첫 페인트 동일)
+  public: InstallNeeded만. HistoryPanel/WindowControls/로컬 API 없음
+  local: 3열 + keepCurrentWindowAboveTaskbar + runtime/inspect
+  History: HistorySnapshotCache. 같은 raw면 같은 배열 참조.
+           getServerHistorySnapshot = EMPTY_HISTORY
+           변경 시에만 persist/notify. 읽기만으로는 저장하지 않음
+
+PreviewPane
+  돋보기/Enter → POST /api/search → 왼쪽 12건
+  AI 검색 → hasSavedOpenaiKey ? openAiChatWindow : 인페이지 안내
+
+DownloadButton
+  POST /api/download → EventSource /api/progress
+  complete + verified → history + LocalFileActions
+  AI 요청은 BroadcastChannel sonicstream.search.v1 + postMessage
+  ACK 4초
+
+ai/page.tsx
+  keepCurrentWindowAboveTaskbar()
+  POST /api/ai-search
+  WatchPlayer / TranscriptPanel
+  메인 열기 → open_main
 ```
 
-Windows 로컬 개발을 1급 환경으로 취급한다. `/tmp`를 문자열로 하드코딩하지 말고 항상 `tempfile.gettempdir()`을 사용한다.
+`getApiBase()`: 정적/같은 오리진이면 `""`. 개발은 rewrite. `NEXT_PUBLIC_API_URL`은 예외만.
+
+설치 URL 기본:
+
+`https://github.com/youlmacc-oss/sonic-stream/releases/download/windows/SonicStream-Windows.zip`
+
+`NEXT_PUBLIC_INSTALLER_URL`로 덮을 수 있다. 프론트 값을 바꾸면 정적 빌드와 ZIP을 다시 만든다.
 
 ---
 
-## 1. 시스템 구조도 (System Architecture Diagram)
+## 7. 데이터 파일
 
-```mermaid
-flowchart TD
-    subgraph Client ["Frontend (Next.js 16 App Router)"]
-        UI["Page & Morphing Button UI"]
-        ES["EventSource (SSE Consumer)"]
-    end
+| 경로 | 스키마 요지 | 상한 |
+| :--- | :--- | :--- |
+| `data/history.json` | `{items:[{id,url,...}]}` | 30, id 중복 제거 |
+| `data/file-registry.json` | `{files:[{path, job_id?, bytes?}]}` | 400, 경로 앞쪽 최신 |
+| `settings.json` | `save_dir`, autostart | 1파일 |
+| `localStorage` 위 키 | `PRD.md` §6.6 | |
 
-    subgraph Server ["Backend (FastAPI Engine)"]
-        API["FastAPI REST Router"]
-        TaskManager["Background Job Manager"]
-        ProgressBroadcaster["In-Memory SSE Event Queue"]
-    end
+이관: 브라우저 이력을 `POST /api/local/history`로 PC에 씀. HistoryPanel 마운트 시 GET으로 hydrate.
 
-    subgraph CoreEngine ["Media Processing Pipeline"]
-        YTDL["yt-dlp Core"]
-        FFMPEG["FFmpeg 6.x / LAME Muxer"]
-        Disk[("Ephemeral Storage (sonic_{job_id})")]
-    end
+설치/제거 (`install-desktop.ps1` / `uninstall-desktop.ps1`):
 
-    UI -->|1. POST /api/inspect| API
-    API -->|Quick Parse| YTDL
-    API -->>|Return Meta JSON| UI
-
-    UI -->|2. POST /api/download| API
-    API -->|Spawn Job| TaskManager
-    API -->>|Return job_id| UI
-
-    ES -->|3. GET /api/progress/{job_id}| ProgressBroadcaster
-    TaskManager -->|4. Stream Fetch & Hook| YTDL
-    YTDL -->|Progress Tick| ProgressBroadcaster
-    ProgressBroadcaster -->>|SSE Event Stream| ES
-
-    YTDL -->|Raw Chunks| Disk
-    TaskManager -->|5. Merge / ID3 Injection| FFMPEG
-    FFMPEG -->|Final Media File| Disk
-
-    ProgressBroadcaster -->>|6. Event: complete| ES
-    ES -->|7. GET /api/fetch/{job_id}| API
-    API -->|FileResponse Stream| UI
-    API -.->|Trigger Cleanup| Disk
-```
-
-### 1.1 요청 수명주기
-
-1. 사용자가 URL을 입력하거나 클립보드 붙여넣기를 한다.
-2. 프론트가 600ms 디바운스 후 `POST /api/inspect`로 메타만 가져온다. 다운로드는 시작하지 않는다.
-3. 사용자가 포맷/품질을 고르고 모핑 버튼을 누른다.
-4. `POST /api/download`가 `job_id`를 반환한다 (`202`).
-5. 프론트가 `GET /api/progress/{job_id}` EventSource를 연다.
-6. 워커가 yt-dlp → FFmpeg/ID3 → `complete` 순으로 진행한다.
-7. 프론트가 `GET /api/fetch/{job_id}`를 hidden anchor로 받아 저장한다.
-8. 서버가 파일을 스트리밍한 뒤 즉시 GC를 예약하고, 최대 10분이면 강제 삭제한다.
+- 설치 위치: `%LOCALAPPDATA%\SonicStream`. 받은 영상은 보통 설치 폴더 밖(`다운로드\SonicStream`).
+- 설치·업데이트 시 보존: `data`, `profile`, `.env`, `runtime.pid`.
+- 제거 시 보존: `data`, `profile`, `.env`. 바로가기는 지운다. 받은 영상 폴더는 건드리지 않는다.
 
 ---
 
-## 2. API 엔드포인트 명세서
-
-공통 규칙:
-
-- JSON 요청/응답, UTF-8.
-- 에러 바디: `{ "code": "INVALID_URL", "message": "유효한 동영상 링크를 입력해 주세요." }`
-- 프론트 UI 상태명은 `format` (`'video' | 'audio'`)이지만, **HTTP 바디 필드명은 `type`** 이다. `DownloadButton`은 `{ url, type: format, quality }`로 POST한다.
-
-### `POST /api/inspect`
-
-Request Body:
-
-```json
-{ "url": "https://www.youtube.com/watch?v=..." }
-```
-
-Response `200`:
-
-```json
-{
-  "title": "Starlight (Official Audio)",
-  "author": "Muse",
-  "duration": "04:00",
-  "thumbnail": "https://i.ytimg.com/vi/.../maxresdefault.jpg"
-}
-```
-
-구현 메모:
-
-- `YoutubeDL({ "quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": True })`.
-- `extract_flat`만으로 썸네일/길이가 비면 동일 URL에 대해 가벼운 `extract_info(download=False)` 한 번으로 보강한다. 스트림은 받지 않는다.
-- `duration`은 초(int/float) → `MM:SS` 또는 `HH:MM:SS`.
-- `author`는 `uploader` 또는 `channel` 또는 `artist`.
-- 썸네일은 `thumbnails` 배열에서 가장 큰 width, 없으면 `thumbnail`.
-- 라이브(`is_live` / `live_status=is_live`)면 `400` + `LIVE_STREAM`.
-
-### `POST /api/download`
-
-Request Body:
-
-```json
-{
-  "url": "https://www.youtube.com/watch?v=...",
-  "type": "video",
-  "quality": "1080p"
-}
-```
-
-허용 값:
-
-- `type`: `"video"` | `"audio"`
-- `quality` (video): `"1080p"` | `"4k"`
-- `quality` (audio): `"320k"` | `"flac"`
-
-잘못된 조합(예: video + `320k`)은 `400` + `INVALID_URL`이 아니라 명시적 `PROCESS_FAILED` 또는 `422` validation error.
-
-Response `202 Accepted`:
-
-```json
-{
-  "job_id": "8f3b610c-f3e1-4c3e-9081-0df8e7b39a7b"
-}
-```
-
-워커는 스레드 또는 `asyncio.to_thread`로 yt-dlp를 돌린다. yt-dlp는 동기 블로킹이므로 이벤트 루프를 막지 말 것.
-
-### `GET /api/progress/{job_id}` (Server-Sent Events)
-
-Headers:
-
-- `Content-Type: text/event-stream`
-- `Cache-Control: no-cache`
-- `Connection: keep-alive`
-- `X-Accel-Buffering: no`
-
-구현: `sse-starlette`의 `EventSourceResponse` 또는 동등한 raw generator. **0.2초 주기**로 최신 스냅샷을 밀어 보낸다.
-
-#### Event: `progress`
-
-```json
-{
-  "status": "downloading",
-  "percent": 54.2,
-  "speed": "6.4 MB/s",
-  "eta": 8
-}
-```
-
-- `percent`: 0~100 float, 소수 1자리.
-- `speed`: 사람이 읽는 문자열. 바이트/초를 `KB/s` 또는 `MB/s`로 포맷.
-- `eta`: 초 단위 int. 모르면 `null`.
-
-#### Event: `processing`
-
-```json
-{
-  "status": "processing",
-  "detail": "최고 음질 변환 및 앨범 아트 임베딩 중..."
-}
-```
-
-비디오 기본 카피: `"FFmpeg 패키징 및 태그 주입 중..."`  
-오디오 기본 카피: `"최고 음질 변환 및 앨범 아트 임베딩 중..."`
-
-processing 동안 게이지는 클라이언트에서 **95%로 고정**한다. 서버가 percent를 보내더라도 클라이언트는 95로 clamp 해도 된다.
-
-#### Event: `complete`
-
-```json
-{
-  "status": "done",
-  "download_url": "http://localhost:8000/api/fetch/8f3b610c-f3e1-4c3e-9081-0df8e7b39a7b"
-}
-```
-
-`download_url`은 절대 URL 또는 `/api/fetch/{job_id}` 상대 경로 모두 허용. 프론트는 상대 경로면 `http://localhost:8000`을 prefix 한다.
-
-#### Event: `error`
-
-```json
-{
-  "status": "error",
-  "code": "GEO_RESTRICTED",
-  "message": "이 영상은 지역 제한으로 받을 수 없습니다."
-}
-```
-
-없는 `job_id`는 연결 직후 `error` + `JOB_NOT_FOUND`를 보내고 스트림을 닫는다.
-
-### `GET /api/fetch/{job_id}`
-
-최종 가공된 미디어 파일을 `FileResponse`로 스트리밍한다.
-
-- `Content-Disposition: attachment; filename="Starlight (Official Audio).mp3"; filename*=UTF-8''...`
-- `media_type`: mp4=`video/mp4`, mp3=`audio/mpeg`, flac=`audio/flac`
-- 전송이 끝나거나 클라이언트가 연결을 끊으면 **즉시** 해당 `sonic_{job_id}` 디렉터리 삭제를 스케줄한다.
-- 파일이 아직 준비되지 않았으면 `409` + `PROCESS_FAILED`가 아니라 `404`/`409`와 `JOB_NOT_FOUND` 또는 명시적 `NOT_READY` 메시지를 반환한다. 프론트는 complete 이후에만 fetch 하므로 정상 플로우에서는 발생하지 않아야 한다.
-
----
-
-## 3. 핵심 다운로드 및 인코딩 파라미터
-
-작업 출력 템플릿:
-
-```python
-outtmpl = str(job_dir / "%(title)s.%(ext)s")
-```
-
-공통 옵션:
-
-```python
-common = {
-    "nocheckcertificate": True,
-    "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
-    "progress_hooks": [make_progress_hook(job_id)],
-    "outtmpl": outtmpl,
-}
-```
-
-라이브 스트림은 다운로드를 시작하지 않고 `LIVE_STREAM`으로 실패시킨다.
-
-### 3.1 비디오 (1080p / 4K)
-
-```python
-ydl_opts = {
-    "format": (
-        "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
-        if quality == "1080p"
-        else "bestvideo[height<=2160]+bestaudio/best"
-    ),
-    "merge_output_format": "mp4",
-    "postprocessors": [
-        {
-            "key": "FFmpegVideoConvertor",
-            "preferedformat": "mp4",
-        },
-        {"key": "FFmpegMetadata"},
-    ],
-    "postprocessor_args": {
-        "ffmpeg": ["-movflags", "+faststart"],
-    },
-    "outtmpl": f"{job_dir}/%(title)s.%(ext)s",
-}
-```
-
-- 비디오+오디오를 분리 수집한 뒤 MP4로 mux한다.
-- `movflags +faststart`로 moov atom을 앞으로 옮겨 브라우저 재생/다운로드 호환을 확보한다.
-- 가능하면 재인코딩 없이 copy, 컨테이너만 맞춘다. `FFmpegVideoConvertor`가 재인코딩을 강제하면 `FFmpegMerger`/`merge_output_format=mp4`를 우선하고 convertor는 fallback으로 둔다.
-
-### 3.2 오디오 (320k MP3 + ID3 커버 아트 주입)
-
-```python
-ydl_opts = {
-    "format": "bestaudio/best",
-    "postprocessors": [
-        {
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "320",
-        },
-        {"key": "FFmpegMetadata"},
-        {"key": "EmbedThumbnail"},
-    ],
-    "writethumbnail": True,
-    "outtmpl": f"{job_dir}/%(title)s.%(ext)s",
-}
-```
-
-필수 동작:
-
-1. 최상위 오디오 스트림 추출.
-2. LAME/FFmpeg로 **320kbps CBR** MP3 변환.
-3. 원본 썸네일 이미지를 받아 ID3 v2.3/v2.4 `APIC` 커버로 바이너리 주입 (`EmbedThumbnail`).
-4. 제목/아티스트/채널을 `FFmpegMetadata`로 기록.
-
-`EmbedThumbnail`이 webp를 거부하면 썸네일을 jpg로 변환하는 전처리(`FFmpegThumbnailsConvertor`, `format=jpg`)를 postprocessor 앞에 넣는다.
-
-### 3.3 오디오 (FLAC 무손실)
-
-```python
-ydl_opts = {
-    "format": "bestaudio/best",
-    "postprocessors": [
-        {
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "flac",
-        },
-        {"key": "FFmpegMetadata"},
-        {"key": "EmbedThumbnail"},
-    ],
-    "writethumbnail": True,
-    "outtmpl": f"{job_dir}/%(title)s.%(ext)s",
-}
-```
-
-FLAC에도 커버/메타를 가능한 한 주입한다. 원본이 이미 FLAC이면 재인코딩 손실을 만들지 않도록 `preferredquality`를 강제하지 않는다.
-
----
-
-## 4. 진행률 훅과 인메모리 Job Store
-
-```python
-jobs: dict[str, Job]  # process-local, 재시작 시 유실 허용 (ephemeral 제품)
-
-class Job:
-    id: str
-    status: Literal["queued", "downloading", "processing", "done", "error"]
-    percent: float
-    speed: str
-    eta: int | None
-    detail: str
-    download_url: str | None
-    file_path: Path | None
-    filename: str | None
-    error_code: str | None
-    error_message: str | None
-    created_at: datetime
-    updated_at: datetime
-```
-
-`progress_hook(d)`:
-
-- `d["status"] == "downloading"`: `percent = downloaded / total * 100`, speed/eta 포맷, job.status=`downloading`.
-- `d["status"] == "finished"`: job.status=`processing`, percent=95, detail을 포맷에 맞게 설정.
-- 예외: job.status=`error`, SSE `error` emit.
-
-SSE 제너레이터는 `job_id` 키로 최신 Job 스냅샷을 0.2초마다 읽고, 상태 종류에 맞는 event name으로 직렬화한다. `done`/`error` emit 후 짧게 유지하고 스트림을 닫아도 된다.
-
----
-
-## 5. 가비지 컬렉션
-
-| 트리거 | 동작 |
-| :--- | :--- |
-| `GET /api/fetch` 응답 종료 (`BackgroundTask`) | 해당 `sonic_{job_id}` 디렉터리 삭제, Job 레코드 제거 가능 |
-| Job `done` 후 10분 미fetch | 디렉터리 + 레코드 삭제 |
-| Job `error` 후 즉시 또는 수 분 내 | 부분 파일 삭제 |
-| App lifespan startup | `sonic_*` 중 mtime > 10분 전부 스윕 |
-
-삭제 실패는 로깅만 하고 요청을 실패시키지 않는다. 다운로드 응답은 이미 나갔거나 나가야 한다.
-
----
-
-## 6. CORS · 의존성 · 바이너리
-
-FastAPI CORS:
-
-```python
-allow_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-allow_credentials = True
-allow_methods = ["*"]
-allow_headers = ["*"]
-```
-
-`requirements.txt` 최소셋:
+## 8. 패키지 ZIP 레이아웃
 
 ```text
-fastapi
-uvicorn[standard]
-yt-dlp
-sse-starlette
-python-multipart
+SonicStream-Windows/
+  BUILD.json
+  설치하기.bat / 실행하기.bat / 종료하기.bat / 제거하기.bat
+  run-desktop.ps1 / install-desktop.ps1 / uninstall-desktop.ps1
+  사용설명서.txt / 설치안내.txt / 먼저읽어주세요.txt
+  backend/main.py, error_logger.py, requirements.txt, app/*.py
+  ui/                        frontend/out
+  runtime/python/            3.11.9 embed + site-packages
+  runtime/node/node.exe      22.19.0
+  runtime/ffmpeg/ffmpeg.exe
 ```
 
-호스트에 `ffmpeg`(및 오디오용 LAME 지원)가 PATH에 있어야 한다. 백엔드는 시작 시 `ffmpeg -version`을 확인하거나, 없으면 명확한 로그를 남긴다.
+`.env`, `.venv`, `node_modules`는 ZIP에 없다.
 
----
+패키저 (`scripts/package-windows.ps1`):
 
-## 7. 프론트 연동 계약
+- 프론트는 `package-lock.json` + `npm ci`만. 실패 시 기존 `node_modules`로 계속하지 않는다.
+- 최종 ZIP은 `dist/SonicStream-Windows.next.zip`을 검사한 뒤에 교체한다. 기존 `dist/SonicStream-Windows.zip`은 검사 전에 지우지 않는다. 교체 실패 시 이전 파일을 남긴다.
+- 스테이지에 `BUILD.json`과 파일별 해시 `FILES.json`을 남긴다.
 
-| 파일 | 책임 |
+고정 버전:
+
+| 구성 | 버전 |
 | :--- | :--- |
-| `frontend/src/app/page.tsx` | URL, format, quality 상태. 클립보드. 600ms 디바운스 Inspect. `MediaCard` 표시 |
-| `frontend/src/components/MediaCard.tsx` | title/author/duration/thumbnail 렌더 |
-| `frontend/src/components/DownloadButton.tsx` | POST download → EventSource → hidden `<a>` fetch → 상태 머신 |
-| `frontend/src/app/globals.css` | Tailwind v4 import + shimmer + 캔버스 토큰 |
+| Embeddable Python | 3.11.9 amd64 |
+| Node (패키지) | 22.19.0 win-x64 |
+| FastAPI | 0.141.1 |
+| uvicorn | 0.53.0 |
+| pydantic | 2.13.5 |
+| yt-dlp | `yt-dlp[default]>=2026.8.19` |
+| openai | `>=1.54.0,<2` |
+| curl_cffi | 0.16.3 |
+| bgutil-ytdlp-pot-provider | 1.3.1 |
+| Next | 16.3.5 |
+| React | 19.2.8 |
+| Tailwind | v4 |
 
-상수:
-
-```ts
-export const API_BASE = "http://localhost:8000";
-```
-
-`DownloadButton` 클릭 시 바디는 반드시:
-
-```ts
-{ url, type: format, quality }
-```
-
-`format` 필드로 POST하지 않는다. Phase 프롬프트의 구어 표현(`format`)은 UI prop 이름이며 와이어 프로토콜은 `type`이다.
-
-EventSource는 브라우저 네이티브 `EventSource`를 사용한다. `addEventListener("progress" | "processing" | "complete" | "error")`. 언마운트/완료/에러 시 `close()` 필수.
-
-파일 저장:
-
-```ts
-const a = document.createElement("a");
-a.href = downloadUrl; // API_BASE prefix if relative
-a.rel = "noopener";
-document.body.appendChild(a);
-a.click();
-a.remove();
-```
+개발 Python은 3.11+면 된다. 패키지 재현은 **3.11.9 embed**.
 
 ---
 
-## 8. 엣지 케이스
+## 9. 창·작업 영역·보안 경계
 
-- **긴 제목:** UI `truncate` + `title` tooltip. 파일명은 120~180자 클램핑, `<>:"/\|?*` 제거, 헤더는 `filename` ASCII fallback + `filename*`.
-- **재생목록 URL:** `noplaylist: True`로 단일 항목만.
-- **라이브:** Inspect 또는 Download 진입 즉시 `LIVE_STREAM`.
-- **429 / bot check:** `RATE_LIMITED`, UI error 롤백.
-- **지리적 제한:** `GEO_RESTRICTED`.
-- **삭제/비공개:** `NOT_FOUND`.
-- **Job TTL:** 10분 후 progress/fetch는 `JOB_NOT_FOUND`.
-- **동시 작업:** 프로세스 메모리 dict로 다중 job 허용. 제품 UI는 버튼당 1 job.
+정본 픽셀·사용자 동작: `UI_SPEC.md` §2.
 
-이 문서가 파이프라인·엔드포인트·yt-dlp 옵션·GC의 단일 소스다. 시각 규칙은 `UI_SPEC.md`를 따른다.
+구현:
+
+| 위치 | 하는 일 |
+| :--- | :--- |
+| `frontend/src/lib/workArea.ts` | `OPEN_PAD=16`, `TASKBAR_FALLBACK=48`. `readWorkArea`는 `screen.avail*`. availHeight가 화면 높이와 같으면 −48. `fitWindowInWorkArea` prefer 80,40. `keepCurrentWindowAboveTaskbar`는 즉시 + 80ms clamp |
+| `searchWindow.ts` | 도움말 560×640, 설치 640×760, 메인 1280×800, AI 1220×840. 연 뒤 0/50ms resize, 200ms clamp. 이름 `sonicstream-help`/`install`/`main`/`ai` |
+| `page.tsx` / `ai/page.tsx` | 마운트 시 clamp. 도움말·설치 페이지는 마운트 clamp 없음 |
+| `WindowControls.tsx` | 전체=`fillWorkArea`, 조절창=`fitWindowInWorkArea(1280,800)` 후 API |
+| `desktop.py` | `WINDOW_PAD=16`, `WINDOW_CHROME_H=48`, `TASKBAR_FALLBACK=48`, `MAIN_WINDOW_W/H=1280×800`. `work_area_rect` = `SPI_GETWORKAREA` + 자동숨김 −48. 새 앱 창은 chrome 48을 더 뺌. restore는 `SetWindowPos` + `SWP_SHOWWINDOW(0x0040)` |
+| `run-desktop.ps1` | 같은 박스 |
+
+`open_or_focus_main_window` ForceFront:
+
+1. 최소화면 restore(9), 아니면 show(5)
+2. AttachThreadInput + Alt keybd_event
+3. BringWindowToTop / SetForegroundWindow
+4. `SetWindowPos` HWND_TOPMOST (−1), flags 3 (`SWP_NOMOVE\|NOSIZE`)
+5. 바로 HWND_NOTOPMOST (−2)
+6. SetForegroundWindow
+
+**항상 위 고정이 아니다.** 포커스용 순간 TOPMOST만 쓴다.
+
+없는 처리: 세션 간 창 위치 저장, 디스플레이 변경 리스너, 모니터 지정, DPI 전용 로직, 화면 밖 지속 감시.
+
+보안:
+
+- 로컬 API는 loopback Host + http/https
+- `open_main` URL도 loopback만
+- 원격 사이트는 ZIP만
+- 창 제목: 메인 `SonicStream`, AI `SonicStream AI`, 도움말 `SonicStream 도움말`, 설치 `SonicStream 설치`
+- EnumWindows: 정확 `SonicStream` 또는 `endswith "| SonicStream"`
+
+---
+
+## 10. 테스트
+
+unittest (`pytest` 없음).
+
+| 파일 | 범위 |
+| :--- | :--- |
+| `test_ops_fixes.py` | 분류, env, UI 경로, 저장 폴더 차단, **`fit_window_in_area`**, 루프백 URL, 검색/조회수, AI 계획, installer, 창 action 거부 |
+| `test_completion_and_files.py` | 검증, 등록부 예전 폴더 열기, 이력, transcript, cancel |
+| `test_recovery.py` | 재시도, SSE, 품질, timeout이 done을 덮지 않음 |
+| `test_eventlog.py` | 로그, 마스킹, admin 404/401 |
+
+프론트 `workArea.ts`, 실제 `window.open`, DPI, 다중 모니터, 작업표시줄 자동 숨김 UI는 자동 시험 없음.
+
+코드 변경 후: 해당 테스트 → `시작하기.bat` → 배포할 설치본이 필요하면 `다른PC에설치하기.bat`. 공개 업로드는 `SONICSTREAM_UPLOAD_RELEASE=1`일 때만.
+
+복원 검증: `scripts/restore-from-md.ps1`은 부록 영역(`RESTORE_BEGIN`~`END`) 안의 매니페스트·TAR만 본다. 표식 없음·파싱 실패·누락·해시 불일치는 throw. `-VerifyOnly`는 재추출 없이 대조.

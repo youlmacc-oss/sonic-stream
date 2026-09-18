@@ -11,25 +11,66 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from starlette.background import BackgroundTask
 
 from app.bundle import build_bundle, bundle_json_bytes, bundle_zip_bytes
+from app.env_file import load_dotenv_files
 from app.env_snapshot import capture_snapshot, current_snapshot, deploy_version, snapshot_id
 from app.errors import MESSAGES, raise_api_error
 from app.eventlog import emit_event
-from app.local_runtime import is_loopback_host, is_local, runtime_status
+from app.desktop import (
+    open_or_focus_main_window,
+    pick_folder_dialog,
+    set_autostart,
+    set_foreground_window_state,
+    set_openai_api_key,
+    set_save_dir,
+)
+from app.history_store import load_history, save_history
+from app.installer import installer_file, installer_info, installer_public_url, installer_redirect_url, setup_batch
+from app.local_runtime import (
+    ManagedFileError,
+    is_loopback_host,
+    is_local,
+    managed_file_stat,
+    open_managed_file,
+    open_save_folder,
+    reveal_managed_file,
+    runtime_status,
+)
 from app.gc import cleanup_job, delete_job_dir, sweep_expired
 from app.jobs import store
 from app.limiter import limiter
 from app.log_backup import get_backup
 from app.log_store import get_store
-from app.models import DownloadAccepted, DownloadRequest, InspectRequest, InspectResponse, MediaQuality, MediaType
+from app.ai_search import AiSearchError, connection_status, run_ai_search
+from app.models import (
+    AiSearchRequest,
+    AiSearchResponse,
+    DownloadAccepted,
+    DownloadRequest,
+    InspectRequest,
+    InspectResponse,
+    LocalHistoryRequest,
+    LocalOpenRequest,
+    LocalSettingsRequest,
+    LocalWindowRequest,
+    MediaQuality,
+    MediaType,
+    SearchRequest,
+    SearchResponse,
+    TranscriptRequest,
+    TranscriptResponse,
+)
+from app.transcript import fetch_transcript
 from app.pot import pot_status
 from app.routes import route_status
 from app.runtime import ejs_package_present, js_runtime_status
 from app.sse import progress_stream
+from app.ui_static import resolve_ui_dir, ui_html_page
 from app.ytdlp_engine import (
     content_disposition,
     ffmpeg_available,
@@ -37,6 +78,7 @@ from app.ytdlp_engine import (
     media_type_for,
     resolve_ffmpeg_dir,
     run_download,
+    search_videos,
     validate_combo,
     validate_url,
 )
@@ -45,6 +87,7 @@ from error_logger import log_error, read_backlog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sonicstream")
+load_dotenv_files()
 
 
 @asynccontextmanager
@@ -97,6 +140,12 @@ def allowed_origins() -> list[str]:
 
 def admin_token() -> str:
     return (os.getenv("ADMIN_TOKEN") or os.getenv("DEBUG_BACKLOG_TOKEN") or "").strip()
+
+
+def require_local_desktop(request: Request) -> None:
+    if not is_local():
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Not found", "detail": "Not found"})
+    require_trusted_client(request)
 
 
 def require_trusted_client(request: Request) -> None:
@@ -214,18 +263,52 @@ def _inspect_error_payload(exc: BaseException) -> tuple[str, str]:
     return "EXTRACT_FAILED", raw or MESSAGES["EXTRACT_FAILED"]
 
 
+@app.get("/api/status")
+async def status() -> dict[str, str]:
+    return connection_status()
+
+
 @app.get("/api/runtime")
-async def runtime() -> dict[str, object]:
+async def runtime(request: Request) -> dict[str, object]:
     snapshot = current_snapshot()
     status = runtime_status(ffmpeg_available())
     status.update(
         {
             "commit": deploy_version(),
             "yt_dlp": snapshot.get("yt_dlp"),
-            "location_label": "내 PC" if is_local() else "서버",
+            "location_label": "이 PC" if is_local() else "설치 필요",
+            "installer": installer_info(str(request.base_url)),
         }
     )
     return status
+
+
+@app.get("/api/desktop/installer/info")
+async def desktop_installer_info(request: Request) -> dict[str, object]:
+    return installer_info(str(request.base_url))
+
+
+@app.get("/api/desktop/installer")
+async def desktop_installer() -> Response:
+    path = installer_file()
+    if path is not None:
+        return FileResponse(
+            path=str(path),
+            filename="SonicStream-Windows.zip",
+            media_type="application/zip",
+        )
+    redirect = installer_redirect_url() or installer_public_url()
+    return RedirectResponse(url=redirect, status_code=307)
+
+
+@app.get("/api/desktop/setup")
+async def desktop_setup(request: Request) -> Response:
+    content = setup_batch(installer_public_url(str(request.base_url)))
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=SonicStream-설치.bat"},
+    )
 
 
 @app.get("/api/jobs/{job_id}")
@@ -255,6 +338,97 @@ async def job_status(job_id: str) -> dict[str, object]:
     }
 
 
+def _local_error(exc: ManagedFileError) -> HTTPException:
+    status = 404 if exc.code == "NOT_FOUND" else 403 if exc.code == "FORBIDDEN" else 500
+    return HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message, "detail": exc.message})
+
+
+@app.post("/api/local/open")
+async def local_open(body: LocalOpenRequest, request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    try:
+        if body.action == "stat":
+            return managed_file_stat(body.path)
+        if body.action == "folder":
+            if not (body.path or "").strip():
+                return open_save_folder()
+            return reveal_managed_file(body.path)
+        return open_managed_file(body.path)
+    except ManagedFileError as exc:
+        raise _local_error(exc)
+
+
+@app.get("/api/local/settings")
+async def local_settings_get(request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    return runtime_status(ffmpeg_available())
+
+
+@app.post("/api/local/settings")
+async def local_settings_set(body: LocalSettingsRequest, request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    try:
+        if body.save_dir:
+            set_save_dir(body.save_dir)
+        if body.autostart is not None:
+            set_autostart(body.autostart)
+        if body.openai_api_key:
+            set_openai_api_key(body.openai_api_key)
+    except ManagedFileError as exc:
+        raise _local_error(exc)
+    return runtime_status(ffmpeg_available())
+
+
+@app.post("/api/local/pick-folder")
+async def local_pick_folder(request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    chosen = await asyncio.to_thread(pick_folder_dialog)
+    if not chosen:
+        return {"ok": False, "cancelled": True}
+    try:
+        path = set_save_dir(chosen)
+    except ManagedFileError as exc:
+        raise _local_error(exc)
+    return {"ok": True, "save_dir": str(path), **runtime_status(ffmpeg_available())}
+
+
+@app.post("/api/local/window")
+async def local_window(body: LocalWindowRequest, request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    try:
+        if body.action == "open_main":
+            host = (request.headers.get("host") or "").strip() or "127.0.0.1:8011"
+            scheme = "https" if request.url.scheme == "https" else "http"
+            return await asyncio.to_thread(open_or_focus_main_window, f"{scheme}://{host}/")
+        return await asyncio.to_thread(set_foreground_window_state, body.action)
+    except ManagedFileError as exc:
+        raise _local_error(exc)
+
+
+@app.get("/api/local/history")
+async def local_history_get(request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    return {"items": load_history()}
+
+
+@app.post("/api/local/history")
+async def local_history_set(body: LocalHistoryRequest, request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+    return {"items": save_history(body.items)}
+
+
+@app.post("/api/local/shutdown")
+async def local_shutdown(request: Request) -> dict[str, object]:
+    require_local_desktop(request)
+
+    async def stop() -> None:
+        await asyncio.sleep(0.4)
+        os._exit(0)
+
+    asyncio.create_task(stop())
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
     require_trusted_client(request)
@@ -263,6 +437,70 @@ async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
         raise_api_error("JOB_NOT_FOUND")
     store.request_cancel(job_id)
     return {"job_id": job_id, "cancel_requested": True}
+
+
+@app.get("/ai")
+async def ai_page() -> FileResponse:
+    path = ui_html_page("ai")
+    if path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
+@app.get("/help")
+async def help_page() -> FileResponse:
+    path = ui_html_page("help")
+    if path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
+@app.get("/install")
+async def install_page() -> FileResponse:
+    path = ui_html_page("install")
+    if path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
+@app.post("/api/search", response_model=SearchResponse)
+async def search(body: SearchRequest) -> SearchResponse:
+    try:
+        result = await asyncio.to_thread(search_videos, body.query, body.limit)
+    except ValueError:
+        raise_api_error("INVALID_URL")
+    except Exception as exc:
+        logger.warning("Search failed: %s", type(exc).__name__)
+        raise_api_error("EXTRACT_FAILED")
+    return SearchResponse(query=result["query"], items=result["items"])
+
+
+@app.post("/api/ai-search", response_model=AiSearchResponse)
+async def ai_search(body: AiSearchRequest, request: Request) -> AiSearchResponse:
+    require_local_desktop(request)
+    try:
+        history = [turn.model_dump() for turn in body.history]
+        result = await asyncio.to_thread(run_ai_search, body.prompt, history)
+    except ValueError:
+        raise_api_error("INVALID_URL")
+    except AiSearchError as exc:
+        raise_api_error(exc.code)
+    except Exception as exc:
+        logger.warning("AI search failed: %s", type(exc).__name__)
+        raise_api_error("AI_FAILED")
+    return AiSearchResponse(reply=result["reply"], keywords=result["keywords"], items=result["items"])
+
+
+@app.post("/api/transcript", response_model=TranscriptResponse)
+async def transcript(body: TranscriptRequest) -> TranscriptResponse:
+    try:
+        result = await asyncio.to_thread(fetch_transcript, body.url)
+    except ValueError:
+        raise_api_error("INVALID_URL")
+    except Exception as exc:
+        logger.warning("Transcript failed: %s", type(exc).__name__)
+        raise_api_error("EXTRACT_FAILED")
+    return TranscriptResponse(**result)
 
 
 @app.post("/api/inspect", response_model=InspectResponse)
@@ -302,6 +540,15 @@ async def inspect(body: InspectRequest, request: Request) -> InspectResponse:
 @app.post("/api/download", response_model=DownloadAccepted, status_code=202)
 async def download(body: DownloadRequest, request: Request) -> DownloadAccepted:
     require_trusted_client(request)
+    if not is_local():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "LOCAL_ONLY",
+                "message": "이 프로그램은 이 PC에 설치해서 사용합니다. 바탕화면의 SonicStream을 실행해 주세요.",
+                "detail": "이 프로그램은 이 PC에 설치해서 사용합니다. 바탕화면의 SonicStream을 실행해 주세요.",
+            },
+        )
     try:
         validate_url(body.url)
     except ValueError:
@@ -569,3 +816,8 @@ async def version() -> dict[str, object]:
         "yt_dlp": snapshot.get("yt_dlp"),
         "paths": [path for path in paths if path.startswith("/api") or path in {"/health", "/version"}],
     }
+
+
+_ui_dir = resolve_ui_dir()
+if _ui_dir is not None:
+    app.mount("/", StaticFiles(directory=str(_ui_dir), html=True), name="ui")

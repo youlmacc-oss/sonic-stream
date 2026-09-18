@@ -6,7 +6,6 @@ import ApiStatus from '@/components/ApiStatus';
 import DesktopSettings from '@/components/DesktopSettings';
 import DownloadButton, { type StartDownloadOpts } from '@/components/DownloadButton';
 import HistoryPanel from '@/components/HistoryPanel';
-import InstallGuideWindow from '@/components/InstallGuideWindow';
 import InstallNeeded from '@/components/InstallNeeded';
 import PreviewPane from '@/components/PreviewPane';
 import WindowControls from '@/components/WindowControls';
@@ -19,9 +18,9 @@ import {
   type RuntimeInfo,
 } from '@/lib/constants';
 import type { DownloadHistoryItem } from '@/types/history';
-import { SEARCH_CHANNEL, notifyStartDownloadResult, openHelpWindow, openInstallWindow } from '@/lib/searchWindow';
+import { SEARCH_CHANNEL, notifyStartDownloadResult, openHelpWindow } from '@/lib/searchWindow';
 import { keepCurrentWindowAboveTaskbar } from '@/lib/workArea';
-import { isDeployedSite } from '@/lib/site';
+import { getAppShell, getServerAppShell, subscribeAppShell } from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType, persistLargeType, subscribeLargeType } from '@/utils/textSize';
 
 const VIDEO_QUALITIES: MediaQuality[] = ['best', '720p', '1080p', '4k'];
@@ -35,7 +34,68 @@ function isAudioQuality(value: string): value is MediaQuality {
   return AUDIO_QUALITIES.includes(value as MediaQuality);
 }
 
-export default function Home() {
+function AppHeader({
+  largeType,
+  local,
+}: {
+  largeType: boolean;
+  local: boolean;
+}) {
+  return (
+    <header className="mb-2 flex shrink-0 items-center justify-between gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <h1 className="text-[length:var(--ss-title)] font-semibold tracking-tight text-white">
+          Sonic<span className="text-cyan-300">Stream</span>
+        </h1>
+        {local && <ApiStatus />}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => openHelpWindow()}
+          className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
+        >
+          <HelpCircle className="mr-1 inline h-4 w-4" />
+          사용 방법
+        </button>
+        <button
+          type="button"
+          onClick={() => persistLargeType(!largeType)}
+          className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
+        >
+          {largeType ? '기본 글씨' : '더 큰 글씨'}
+        </button>
+        {local && <WindowControls />}
+      </div>
+    </header>
+  );
+}
+
+function BootScreen({ largeType }: { largeType: boolean }) {
+  return (
+    <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
+      <AppHeader largeType={largeType} local={false} />
+      <section className="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900">
+        <p className="px-4 text-center text-[length:var(--ss-body)] leading-relaxed text-zinc-200">
+          화면을 준비하는 중
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function PublicInstallScreen({ largeType }: { largeType: boolean }) {
+  return (
+    <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
+      <AppHeader largeType={largeType} local={false} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <InstallNeeded />
+      </div>
+    </main>
+  );
+}
+
+function LocalProgram({ largeType }: { largeType: boolean }) {
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<PresentationMode>('video');
   const [quality, setQuality] = useState<MediaQuality>('best');
@@ -45,9 +105,6 @@ export default function Home() {
   const [pasteButtonLabel, setPasteButtonLabel] = useState('붙여넣기');
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [advanced, setAdvanced] = useState(false);
-  const largeType = useSyncExternalStore(subscribeLargeType, loadLargeType, () => false);
-  const [needsInstall, setNeedsInstall] = useState(false);
-  const [installOpen, setInstallOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const startRef = useRef<((opts?: StartDownloadOpts) => void) | null>(null);
   const pasteHintTimer = useRef<number | null>(null);
@@ -120,10 +177,6 @@ export default function Home() {
   useEffect(() => keepCurrentWindowAboveTaskbar(), []);
 
   useEffect(() => {
-    applyLargeTypeClass(largeType);
-  }, [largeType]);
-
-  useEffect(() => {
     const takeUrl = (value: unknown) => {
       if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
         setUrl(value);
@@ -136,9 +189,9 @@ export default function Home() {
         if (data.requestId) notifyStartDownloadResult(data.requestId, false, '주소가 올바르지 않습니다.');
         return;
       }
-      const format: MediaFormat = data.format === 'audio' ? 'audio' : 'video';
-      const quality: MediaQuality = format === 'audio' ? '320k' : '1080p';
-      const key = `${data.url}|${format}|${quality}`;
+      const nextFormat: MediaFormat = data.format === 'audio' ? 'audio' : 'video';
+      const nextQuality: MediaQuality = nextFormat === 'audio' ? '320k' : '1080p';
+      const key = `${data.url}|${nextFormat}|${nextQuality}`;
       const now = Date.now();
       if (key === lastStartKey && now - lastStartAt < 2000) {
         if (data.requestId) notifyStartDownloadResult(data.requestId, false, '같은 받기가 이미 진행 중입니다.');
@@ -147,16 +200,16 @@ export default function Home() {
       lastStartKey = key;
       lastStartAt = now;
       setUrl(data.url);
-      setMode(format === 'audio' ? 'audio' : 'video');
-      setQuality(quality);
+      setMode(nextFormat === 'audio' ? 'audio' : 'video');
+      setQuality(nextQuality);
       if (!startRef.current) {
         if (data.requestId) notifyStartDownloadResult(data.requestId, false, '메인 화면이 아직 받을 준비가 되지 않았습니다.');
         return;
       }
       startRef.current({
         url: data.url,
-        format,
-        quality,
+        format: nextFormat,
+        quality: nextQuality,
         title: data.title,
         author: data.author,
         thumbnail: data.thumbnail,
@@ -187,39 +240,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const forceInstall = new URLSearchParams(window.location.search).get('install') === '1';
-    const deployed = isDeployedSite();
-    const applyInstall = (need: boolean) => {
-      queueMicrotask(() => {
-        setNeedsInstall(need);
-        setInstallOpen(need);
-      });
-    };
-    if (forceInstall || deployed) applyInstall(true);
-    else applyInstall(false);
     const controller = new AbortController();
     fetch(`${getApiBase()}/api/runtime`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
       .then((payload: RuntimeInfo | null) => {
         if (controller.signal.aborted) return;
-        const next = payload || { location: 'server' as const, location_label: '설치 필요' };
-        setRuntime(next);
-        if (forceInstall || deployed) {
-          setNeedsInstall(true);
-          setInstallOpen(true);
-          return;
-        }
-        setNeedsInstall(false);
-        setInstallOpen(false);
+        setRuntime(payload || { location: 'local', location_label: '이 PC' });
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         if (error instanceof DOMException && error.name === 'AbortError') return;
-        setRuntime({ location: 'server', location_label: '설치 필요' });
-        if (forceInstall || deployed) {
-          setNeedsInstall(true);
-          setInstallOpen(true);
-        }
+        setRuntime({ location: 'local', location_label: '이 PC' });
       });
     return () => controller.abort();
   }, []);
@@ -309,61 +340,8 @@ export default function Home() {
 
   return (
     <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
-      <header className="mb-2 flex shrink-0 items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h1 className="text-[length:var(--ss-title)] font-semibold tracking-tight text-white">
-            Sonic<span className="text-cyan-300">Stream</span>
-          </h1>
-          <ApiStatus />
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {needsInstall && (
-            <button
-              type="button"
-              onClick={() => {
-                setInstallOpen(true);
-                openInstallWindow();
-              }}
-              className="rounded-lg border border-cyan-500 bg-cyan-950 px-2.5 text-[length:var(--ss-button)] font-semibold text-cyan-100 hover:bg-cyan-900"
-            >
-              설치 안내
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => openHelpWindow()}
-            className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
-          >
-            <HelpCircle className="mr-1 inline h-4 w-4" />
-            사용 방법
-          </button>
-          <button
-            type="button"
-            onClick={() => persistLargeType(!largeType)}
-            className="rounded-lg border border-zinc-600 bg-zinc-800 px-2.5 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-700"
-          >
-            {largeType ? '기본 글씨' : '더 큰 글씨'}
-          </button>
-          <WindowControls />
-        </div>
-      </header>
+      <AppHeader largeType={largeType} local />
 
-      {needsInstall && (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {installOpen ? (
-            <p className="px-4 py-6 text-center text-[length:var(--ss-body)] leading-relaxed text-zinc-300">
-              이 사이트에서는 영상을 받지 않습니다. 설치 안내 창에서 프로그램을 받아 이 PC에 설치하세요.
-            </p>
-          ) : (
-            <InstallNeeded runtime={runtime} />
-          )}
-        </div>
-      )}
-      {installOpen && (
-        <InstallGuideWindow runtime={runtime} onClose={() => setInstallOpen(false)} />
-      )}
-
-      {!needsInstall && (
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,2.2fr)_minmax(0,1.5fr)] gap-2 overflow-hidden">
         <div className="min-h-0 overflow-hidden">
           <PreviewPane
@@ -491,7 +469,23 @@ export default function Home() {
           />
         </div>
       </div>
-      )}
     </main>
   );
+}
+
+export default function Home() {
+  const largeType = useSyncExternalStore(subscribeLargeType, loadLargeType, () => false);
+  const shell = useSyncExternalStore(subscribeAppShell, getAppShell, getServerAppShell);
+
+  useEffect(() => {
+    applyLargeTypeClass(largeType);
+  }, [largeType]);
+
+  if (shell === 'boot') {
+    return <BootScreen largeType={largeType} />;
+  }
+  if (shell === 'public') {
+    return <PublicInstallScreen largeType={largeType} />;
+  }
+  return <LocalProgram largeType={largeType} />;
 }

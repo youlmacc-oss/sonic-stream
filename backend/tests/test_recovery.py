@@ -30,6 +30,12 @@ class RecoveryTestCase(unittest.TestCase):
         recover_route("direct")
         recover_route("proxy")
         recover_route("home")
+        self.verify_patch = patch(
+            "app.ytdlp_engine.evaluate_saved_media",
+            return_value={"ok": True, "code": None, "probe": {"width": 1280, "height": 720}, "file_bytes": 16},
+        )
+        self.verify_patch.start()
+        self.addCleanup(self.verify_patch.stop)
 
     def test_rate_limit_wait_has_upper_bound(self) -> None:
         first = decide_next(
