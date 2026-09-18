@@ -36,10 +36,10 @@ describe('development PC gate', () => {
     );
   });
 
-  it('always opens the main screen on the same origin', () => {
+  it('adds devpc=1 for public hosts and stays clean for loopback', () => {
     assert.equal(
       localMainScreenUrl('https://sonic-stream-teal.vercel.app', 'sonic-stream-teal.vercel.app'),
-      'https://sonic-stream-teal.vercel.app/',
+      'https://sonic-stream-teal.vercel.app/?devpc=1',
     );
     assert.equal(localMainScreenUrl('http://127.0.0.1:3000', '127.0.0.1'), 'http://127.0.0.1:3000/');
   });

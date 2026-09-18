@@ -1,13 +1,18 @@
 import { isLoopbackHost } from './site';
-import { localMainScreenUrl, readClientShowDevMainButton } from './devPc';
+import { localMainScreenUrl, readClientShowDevMainButton, resolveShowDevMainButton } from './devPc';
 
 export type AppShell = 'boot' | 'public' | 'local';
 export { subscribeShowDevMainButton } from './devPc';
 
 export function resolveAppShell(hostname: string, search = ''): AppShell {
-  const forceInstall = new URLSearchParams(search).get('install') === '1';
-  if (forceInstall || !isLoopbackHost(hostname)) return 'public';
-  return 'local';
+  const params = new URLSearchParams(search);
+  const forceInstall = params.get('install') === '1';
+  const forceLocal = params.get('devpc') === '1';
+  
+  if (forceInstall) return 'public';
+  if (forceLocal) return 'local';
+  if (isLoopbackHost(hostname)) return 'local';
+  return 'public';
 }
 
 export function getAppShell(): AppShell {
