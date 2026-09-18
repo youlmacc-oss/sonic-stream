@@ -1,6 +1,8 @@
 import { isLoopbackHost } from './site';
+import { localMainScreenUrl, readClientShowDevMainButton } from './devPc';
 
 export type AppShell = 'boot' | 'public' | 'local';
+export { subscribeShowDevMainButton } from './devPc';
 
 export function resolveAppShell(hostname: string, search = ''): AppShell {
   const forceInstall = new URLSearchParams(search).get('install') === '1';
@@ -31,8 +33,7 @@ export function isDevPcHost(hostname: string): boolean {
 }
 
 export function getShowDevMainButton(): boolean {
-  if (typeof window === 'undefined') return false;
-  return isLoopbackHost(window.location.hostname);
+  return readClientShowDevMainButton();
 }
 
 export function getServerShowDevMainButton(): boolean {
@@ -40,5 +41,5 @@ export function getServerShowDevMainButton(): boolean {
 }
 
 export function openLocalMainScreen(): void {
-  window.location.assign(`${window.location.origin}/`);
+  window.location.assign(localMainScreenUrl(window.location.origin, window.location.hostname));
 }

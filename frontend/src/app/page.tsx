@@ -27,6 +27,7 @@ import {
   getShowDevMainButton,
   openLocalMainScreen,
   subscribeAppShell,
+  subscribeShowDevMainButton,
 } from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType, persistLargeType, subscribeLargeType } from '@/utils/textSize';
 
@@ -104,7 +105,7 @@ function BootScreen({ largeType }: { largeType: boolean }) {
 
 function PublicInstallScreen({ largeType }: { largeType: boolean }) {
   const showDevMain = useSyncExternalStore(
-    subscribeAppShell,
+    subscribeShowDevMainButton,
     getShowDevMainButton,
     getServerShowDevMainButton,
   );

@@ -21,7 +21,7 @@ describe('app shell', () => {
     assert.equal(resolveAppShell('[::1]'), 'local');
   });
 
-  it('shows the main-screen button only on the development PC host', () => {
+  it('treats only loopback as a development PC host name', () => {
     assert.equal(getServerShowDevMainButton(), false);
     assert.equal(isDevPcHost('127.0.0.1'), true);
     assert.equal(isDevPcHost('localhost'), true);

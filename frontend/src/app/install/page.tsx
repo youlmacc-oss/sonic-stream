@@ -11,6 +11,7 @@ import {
   getShowDevMainButton,
   openLocalMainScreen,
   subscribeAppShell,
+  subscribeShowDevMainButton,
 } from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType } from '@/utils/textSize';
 
@@ -18,7 +19,7 @@ export default function InstallPage() {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const shell = useSyncExternalStore(subscribeAppShell, getAppShell, getServerAppShell);
   const showDevMain = useSyncExternalStore(
-    subscribeAppShell,
+    subscribeShowDevMainButton,
     getShowDevMainButton,
     getServerShowDevMainButton,
   );
