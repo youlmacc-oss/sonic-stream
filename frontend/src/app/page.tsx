@@ -10,6 +10,7 @@ import InstallNeeded from '@/components/InstallNeeded';
 import PreviewPane from '@/components/PreviewPane';
 import WindowControls from '@/components/WindowControls';
 import {
+  apiInit,
   getApiBase,
   type MediaFormat,
   type MediaInfo,
@@ -46,10 +47,12 @@ function AppHeader({
   largeType,
   local,
   showDevMain = false,
+  showStatus = false,
 }: {
   largeType: boolean;
   local: boolean;
   showDevMain?: boolean;
+  showStatus?: boolean;
 }) {
   return (
     <header className="mb-2 flex shrink-0 items-center justify-between gap-2">
@@ -57,7 +60,7 @@ function AppHeader({
         <h1 className="text-[length:var(--ss-title)] font-semibold tracking-tight text-white">
           Sonic<span className="text-cyan-300">Stream</span>
         </h1>
-        {local && <ApiStatus />}
+        {(local || showStatus) && <ApiStatus />}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {showDevMain && (
@@ -119,7 +122,8 @@ function PublicInstallScreen({ largeType }: { largeType: boolean }) {
   );
 }
 
-function LocalProgram({ largeType }: { largeType: boolean }) {
+function LocalProgram({ largeType, surface }: { largeType: boolean; surface: 'local' | 'web' }) {
+  const desktop = surface === 'local';
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<PresentationMode>('video');
   const [quality, setQuality] = useState<MediaQuality>('best');
@@ -198,7 +202,10 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
     showPasteFallback();
   };
 
-  useEffect(() => keepCurrentWindowAboveTaskbar(), []);
+  useEffect(() => {
+    if (!desktop) return undefined;
+    return keepCurrentWindowAboveTaskbar();
+  }, [desktop]);
 
   useEffect(() => {
     const takeUrl = (value: unknown) => {
@@ -264,6 +271,10 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
   }, []);
 
   useEffect(() => {
+    if (!desktop) {
+      setRuntime(null);
+      return undefined;
+    }
     const controller = new AbortController();
     fetch(`${getApiBase()}/api/runtime`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
@@ -277,7 +288,7 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
         setRuntime({ location: 'local', location_label: '이 PC' });
       });
     return () => controller.abort();
-  }, []);
+  }, [desktop]);
 
   useEffect(() => {
     const trimmed = url.trim();
@@ -297,6 +308,7 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: trimmed }),
           signal: controller.signal,
+          ...apiInit(),
         });
         let payload: MediaInfo & { message?: string; detail?: string };
         try {
@@ -318,7 +330,9 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
           return;
         }
         setMediaInfo(null);
-        setInspectError('프로그램에 연결할 수 없습니다. 바탕화면의 SonicStream을 다시 눌러 주세요.');
+        setInspectError(desktop
+          ? '프로그램에 연결할 수 없습니다. 바탕화면의 SonicStream을 다시 눌러 주세요.'
+          : '배포 프로그램에 연결할 수 없습니다. 로컬 주소로 바꾸지 않습니다.');
       } finally {
         if (!controller.signal.aborted) {
           setInspecting(false);
@@ -364,7 +378,7 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
 
   return (
     <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2">
-      <AppHeader largeType={largeType} local />
+      <AppHeader largeType={largeType} local={desktop} showStatus={!desktop} />
 
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,2.2fr)_minmax(0,1.5fr)] gap-2 overflow-hidden">
         <div className="min-h-0 overflow-hidden">
@@ -470,6 +484,7 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
               saveDir={runtime?.save_dir}
               autostart={runtime?.autostart}
               onRuntime={setRuntime}
+              variant={desktop ? 'desktop' : 'web'}
             />
 
             <DownloadButton
@@ -477,8 +492,8 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
               format={format}
               quality={quality}
               media={mediaInfo}
-              location="local"
-              localReady
+              location={desktop ? 'local' : 'server'}
+              localReady={desktop}
               saveDir={runtime?.save_dir}
               startRef={startRef}
             />
@@ -489,7 +504,7 @@ function LocalProgram({ largeType }: { largeType: boolean }) {
           <HistoryPanel
             onRestore={restoreHistoryItem}
             onRedownload={redownloadHistoryItem}
-            localReady
+            localReady={desktop}
           />
         </div>
       </div>
@@ -511,5 +526,8 @@ export default function Home() {
   if (shell === 'public') {
     return <PublicInstallScreen largeType={largeType} />;
   }
-  return <LocalProgram largeType={largeType} />;
+  if (shell === 'web') {
+    return <LocalProgram largeType={largeType} surface="web" />;
+  }
+  return <LocalProgram largeType={largeType} surface="local" />;
 }

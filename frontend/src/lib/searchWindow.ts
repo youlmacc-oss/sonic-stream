@@ -1,4 +1,5 @@
-import { getApiBase } from '@/lib/constants';
+import { apiInit, getApiBase } from '@/lib/constants';
+import { isLoopbackHost } from '@/lib/site';
 import { applyWindowBox, clampWindowToWorkArea, fitWindowInWorkArea, windowOpenFeatures } from '@/lib/workArea';
 
 export const SEARCH_CHANNEL = 'sonicstream.search.v1';
@@ -35,7 +36,8 @@ export function openInstallWindow() {
 }
 
 export async function openMainWindow() {
-  const url = `${window.location.origin}/`;
+  const desktop = isLoopbackHost(window.location.hostname);
+  const url = desktop ? `${window.location.origin}/` : `${window.location.origin}/?devpc=1`;
   if (window.opener && !window.opener.closed) {
     try {
       window.opener.focus();
@@ -43,15 +45,18 @@ export async function openMainWindow() {
       // opener blocked — desktop API still brings the main window forward
     }
   }
-  try {
-    const response = await fetch(`${getApiBase()}/api/local/window`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'open_main' }),
-    });
-    if (response.ok) return;
-  } catch {
-    // browser-only session
+  if (desktop) {
+    try {
+      const response = await fetch(`${getApiBase()}/api/local/window`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'open_main' }),
+        ...apiInit(),
+      });
+      if (response.ok) return;
+    } catch {
+      // browser-only session
+    }
   }
   const box = fitWindowInWorkArea(1280, 800);
   const popup = window.open(url, 'sonicstream-main', windowOpenFeatures(box));
@@ -107,6 +112,7 @@ export async function fetchSearch(query: string, limit = 12): Promise<SearchHit[
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: next, limit }),
+    ...apiInit(),
   });
   const payload = (await response.json()) as {
     items?: SearchHit[];
@@ -132,6 +138,7 @@ export async function fetchAiSearch(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: next, history }),
+    ...apiInit(),
   });
   const payload = (await response.json()) as {
     reply?: string;
@@ -173,6 +180,7 @@ export async function fetchTranscript(url: string): Promise<TranscriptResult> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
+    ...apiInit(),
   });
   const payload = (await response.json()) as TranscriptResult & {
     detail?: string | { message?: string; detail?: string };

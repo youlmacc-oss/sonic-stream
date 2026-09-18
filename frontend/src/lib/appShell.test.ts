@@ -14,10 +14,11 @@ describe('app shell', () => {
     assert.equal(resolveAppShell('localhost', '?install=1'), 'public');
   });
 
-  it('shows the local program with ?devpc=1 on public hosts', () => {
-    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?devpc=1'), 'local');
-    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?devpc=1&other=test'), 'local');
-    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?install=1&devpc=1'), 'public'); // install takes priority
+  it('uses ?devpc=1 only to open the deployed web program', () => {
+    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?devpc=1'), 'web');
+    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?devpc=1&other=test'), 'web');
+    assert.equal(resolveAppShell('127.0.0.1', '?devpc=1'), 'local');
+    assert.equal(resolveAppShell('sonic-stream-teal.vercel.app', '?install=1&devpc=1'), 'public');
   });
 
   it('keeps loopback hosts on the local program shell', () => {

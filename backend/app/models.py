@@ -107,6 +107,10 @@ class LocalSettingsRequest(BaseModel):
     openai_api_key: str | None = None
 
 
+class WebSessionRequest(BaseModel):
+    openai_api_key: str = ""
+
+
 class LocalWindowRequest(BaseModel):
     action: Literal["minimize", "maximize", "restore", "open_main"]
 
@@ -129,6 +133,7 @@ class Job:
         fingerprint: str | None = None,
         request_id: str | None = None,
         snapshot_id: str | None = None,
+        owner: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         self.id = job_id
@@ -137,6 +142,7 @@ class Job:
         self.fingerprint = fingerprint
         self.request_id = request_id
         self.snapshot_id = snapshot_id
+        self.owner = owner
         self.status: JobStatus = "queued"
         self.percent: float = 0.0
         self.speed: str = "0 KB/s"

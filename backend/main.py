@@ -47,6 +47,7 @@ from app.limiter import limiter
 from app.log_backup import get_backup
 from app.log_store import get_store
 from app.ai_search import AiSearchError, connection_status, run_ai_search
+from app import web_session
 from app.models import (
     AiSearchRequest,
     AiSearchResponse,
@@ -64,6 +65,7 @@ from app.models import (
     SearchResponse,
     TranscriptRequest,
     TranscriptResponse,
+    WebSessionRequest,
 )
 from app.transcript import fetch_transcript
 from app.pot import pot_status
@@ -128,7 +130,8 @@ app = FastAPI(title="SonicStream", lifespan=lifespan)
 
 DEFAULT_ORIGINS = (
     "http://localhost:3000,http://127.0.0.1:3000,"
-    "http://localhost:8000,http://127.0.0.1:8000"
+    "http://localhost:8000,http://127.0.0.1:8000,"
+    "https://sonic-stream-teal.vercel.app"
 )
 
 
@@ -161,6 +164,18 @@ def require_trusted_client(request: Request) -> None:
         parsed = urlparse(origin)
         if not is_loopback_host(parsed.hostname or ""):
             raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "허용되지 않은 출처입니다."})
+
+
+def require_job_access(job: object, request: Request) -> None:
+    owner = getattr(job, "owner", None)
+    if owner:
+        if web_session.current_id(request) != owner:
+            raise_api_error("JOB_NOT_FOUND")
+        return
+    if is_local():
+        require_trusted_client(request)
+        return
+    raise_api_error("JOB_NOT_FOUND")
 
 
 def require_admin(request: Request) -> None:
@@ -264,8 +279,39 @@ def _inspect_error_payload(exc: BaseException) -> tuple[str, str]:
 
 
 @app.get("/api/status")
-async def status() -> dict[str, str]:
-    return connection_status()
+async def status(request: Request, response: Response) -> dict[str, str]:
+    if is_local():
+        return connection_status()
+    web_session.bind(request, response)
+    return web_session.status_for(request)
+
+
+@app.post("/api/web/session")
+async def web_session_set(body: WebSessionRequest, request: Request, response: Response) -> dict[str, str]:
+    if is_local():
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Not found", "detail": "Not found"})
+    sid = web_session.bind(request, response)
+    key = (body.openai_api_key or "").strip()
+    if not key.startswith("sk-") or len(key) < 20:
+        web_session.remember(sid, key="", openai="key_error", openai_label="AI 키가 올바르지 않습니다")
+        return web_session.status_for_id(sid)
+    verified = await asyncio.to_thread(web_session.verify_session_key, key)
+    web_session.remember(
+        sid,
+        key=key if verified.get("openai") == "ready" else "",
+        openai=verified["openai"],
+        openai_label=verified["openai_label"],
+    )
+    return web_session.status_for_id(sid)
+
+
+@app.delete("/api/web/session")
+async def web_session_clear(request: Request, response: Response) -> dict[str, str]:
+    if is_local():
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Not found", "detail": "Not found"})
+    sid = web_session.bind(request, response)
+    web_session.clear(sid)
+    return web_session.status_for_id(sid)
 
 
 @app.get("/api/runtime")
@@ -312,10 +358,11 @@ async def desktop_setup(request: Request) -> Response:
 
 
 @app.get("/api/jobs/{job_id}")
-async def job_status(job_id: str) -> dict[str, object]:
+async def job_status(job_id: str, request: Request) -> dict[str, object]:
     job = store.get(job_id)
     if job is None:
         raise_api_error("JOB_NOT_FOUND")
+    require_job_access(job, request)
     return {
         "job_id": job.id,
         "status": job.status,
@@ -431,10 +478,10 @@ async def local_shutdown(request: Request) -> dict[str, object]:
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
-    require_trusted_client(request)
     job = store.get(job_id)
     if job is None:
         raise_api_error("JOB_NOT_FOUND")
+    require_job_access(job, request)
     store.request_cancel(job_id)
     return {"job_id": job_id, "cancel_requested": True}
 
@@ -476,11 +523,18 @@ async def search(body: SearchRequest) -> SearchResponse:
 
 
 @app.post("/api/ai-search", response_model=AiSearchResponse)
-async def ai_search(body: AiSearchRequest, request: Request) -> AiSearchResponse:
-    require_local_desktop(request)
+async def ai_search(body: AiSearchRequest, request: Request, response: Response) -> AiSearchResponse:
+    api_key = None
+    if is_local():
+        require_trusted_client(request)
+    else:
+        web_session.bind(request, response)
+        api_key = web_session.key_for(request)
+        if not api_key:
+            raise_api_error("AI_UNAVAILABLE")
     try:
         history = [turn.model_dump() for turn in body.history]
-        result = await asyncio.to_thread(run_ai_search, body.prompt, history)
+        result = await asyncio.to_thread(run_ai_search, body.prompt, history, api_key)
     except ValueError:
         raise_api_error("INVALID_URL")
     except AiSearchError as exc:
@@ -538,17 +592,12 @@ async def inspect(body: InspectRequest, request: Request) -> InspectResponse:
 
 
 @app.post("/api/download", response_model=DownloadAccepted, status_code=202)
-async def download(body: DownloadRequest, request: Request) -> DownloadAccepted:
-    require_trusted_client(request)
-    if not is_local():
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "LOCAL_ONLY",
-                "message": "이 프로그램은 이 PC에 설치해서 사용합니다. 바탕화면의 SonicStream을 실행해 주세요.",
-                "detail": "이 프로그램은 이 PC에 설치해서 사용합니다. 바탕화면의 SonicStream을 실행해 주세요.",
-            },
-        )
+async def download(body: DownloadRequest, request: Request, response: Response) -> DownloadAccepted:
+    owner = None
+    if is_local():
+        require_trusted_client(request)
+    else:
+        owner = web_session.bind(request, response)
     try:
         validate_url(body.url)
     except ValueError:
@@ -559,7 +608,7 @@ async def download(body: DownloadRequest, request: Request) -> DownloadAccepted:
     except ValueError:
         raise_api_error("PROCESS_FAILED", 422)
 
-    fingerprint = limiter.fingerprint(body.url, body.type, body.quality)
+    fingerprint = limiter.fingerprint(body.url, body.type, body.quality, owner)
     job_id = str(uuid4())
     request_id = _request_id(request)
     admitted = limiter.admit(job_id, fingerprint)
@@ -575,6 +624,7 @@ async def download(body: DownloadRequest, request: Request) -> DownloadAccepted:
         fingerprint=fingerprint,
         request_id=request_id,
         snapshot_id=snapshot_id(),
+        owner=owner,
     )
     emit_event(
         event="started",
@@ -667,6 +717,10 @@ async def _run_job_safe(
 
 @app.get("/api/progress/{job_id}")
 async def progress(job_id: str, request: Request) -> EventSourceResponse:
+    job = store.get(job_id)
+    if job is None:
+        raise_api_error("JOB_NOT_FOUND")
+    require_job_access(job, request)
     try:
         return EventSourceResponse(
             progress_stream(job_id),
@@ -692,6 +746,7 @@ async def fetch(job_id: str, request: Request) -> FileResponse:
         job = store.get(job_id)
         if job is None:
             raise_api_error("JOB_NOT_FOUND")
+        require_job_access(job, request)
         if job.status != "done" or job.file_path is None:
             raise_api_error("NOT_READY")
 

@@ -47,8 +47,10 @@ export default function HistoryPanel({ onRestore, onRedownload, localReady }: Hi
   const [filter, setFilter] = useState<'all' | HistoryStatus>('all');
 
   useEffect(() => {
+    if (!localReady) return undefined;
     void hydrateHistoryFromPc();
-  }, []);
+    return undefined;
+  }, [localReady]);
 
   const visible = useMemo(() => {
     return items.filter((item) => {

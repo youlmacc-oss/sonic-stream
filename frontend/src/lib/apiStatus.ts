@@ -1,4 +1,4 @@
-import { getApiBase } from '@/lib/constants';
+import { getApiBase, apiInit } from '@/lib/constants';
 
 export interface ConnectionStatus {
   engine: 'ok' | 'down';
@@ -37,7 +37,7 @@ export function hasSavedOpenaiKey(status: ConnectionStatus): boolean {
 
 export async function fetchConnectionStatus(): Promise<ConnectionStatus> {
   try {
-    const response = await fetch(`${getApiBase()}/api/status`, { cache: 'no-store' });
+    const response = await fetch(`${getApiBase()}/api/status`, { cache: 'no-store', ...apiInit() });
     if (!response.ok) return DISCONNECTED;
     const payload = (await response.json()) as Partial<ConnectionStatus>;
     return {

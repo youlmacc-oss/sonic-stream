@@ -169,8 +169,12 @@ def _parse_plan(raw: str, fallback_prompt: str) -> tuple[str, list[str]]:
     return reply, unique[:KEYWORD_LIMIT]
 
 
-def plan_search(prompt: str, history: list[dict[str, str]] | None = None) -> tuple[str, list[str]]:
-    key = openai_api_key()
+def plan_search(
+    prompt: str,
+    history: list[dict[str, str]] | None = None,
+    api_key: str | None = None,
+) -> tuple[str, list[str]]:
+    key = (api_key if api_key is not None else openai_api_key()).strip()
     if not key:
         raise AiSearchError("AI_UNAVAILABLE")
     try:
@@ -233,9 +237,13 @@ def collect_ytsearch_hits(keywords: list[str], limit: int = RESULT_LIMIT) -> lis
     return items
 
 
-def run_ai_search(prompt: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+def run_ai_search(
+    prompt: str,
+    history: list[dict[str, str]] | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
     cleaned = normalize_prompt(prompt)
-    reply, keywords = plan_search(cleaned, history)
+    reply, keywords = plan_search(cleaned, history, api_key=api_key)
     items = collect_ytsearch_hits(keywords, RESULT_LIMIT)
     if not items and keywords:
         try:

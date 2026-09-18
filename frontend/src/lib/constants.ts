@@ -1,3 +1,5 @@
+import { isLoopbackHost } from './site';
+
 export type MediaFormat = 'video' | 'audio';
 export type MediaQuality = 'best' | '720p' | '1080p' | '4k' | '320k' | 'flac';
 export type PresentationMode = 'video' | 'shorts' | 'audio';
@@ -41,9 +43,16 @@ export interface RuntimeInfo {
 }
 
 export function getApiBase(): string {
+  const host = typeof window === 'undefined' ? '' : window.location?.hostname || '';
+  if (host && isLoopbackHost(host)) return '';
   const env = process.env.NEXT_PUBLIC_API_URL;
   if (env) return env.replace(/\/$/, '');
   return '';
+}
+
+export function apiInit(init: RequestInit = {}): RequestInit {
+  if (!getApiBase()) return init;
+  return { credentials: 'include', ...init };
 }
 
 export const API_BASE = getApiBase();

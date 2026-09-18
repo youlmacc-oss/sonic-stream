@@ -23,6 +23,7 @@ class JobStore:
         fingerprint: str | None = None,
         request_id: str | None = None,
         snapshot_id: str | None = None,
+        owner: str | None = None,
     ) -> Job:
         job = Job(
             job_id,
@@ -31,6 +32,7 @@ class JobStore:
             fingerprint=fingerprint,
             request_id=request_id,
             snapshot_id=snapshot_id,
+            owner=owner,
         )
         with self._lock:
             self._jobs[job_id] = job

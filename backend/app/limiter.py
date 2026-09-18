@@ -37,8 +37,9 @@ class DownloadLimiter:
     def max_queue(self) -> int:
         return _int_env("MAX_DOWNLOAD_QUEUE", 8)
 
-    def fingerprint(self, url: str, media_type: str, quality: str) -> str:
-        return f"{url.strip()}|{media_type}|{quality}"
+    def fingerprint(self, url: str, media_type: str, quality: str, owner: str | None = None) -> str:
+        base = f"{url.strip()}|{media_type}|{quality}"
+        return f"{owner}|{base}" if owner else base
 
     def admit(self, job_id: str, fingerprint: str) -> AdmitResult:
         now = time.time()

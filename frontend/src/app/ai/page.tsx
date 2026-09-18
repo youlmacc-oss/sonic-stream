@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Copy, Home, RotateCw, Send } from 'lucide-react';
 import AiResultCard from '@/components/AiResultCard';
 import AiSearchSkeleton from '@/components/AiSearchSkeleton';
@@ -12,6 +12,7 @@ import MoreOnYoutube from '@/components/MoreOnYoutube';
 import { copyText } from '@/lib/fileActions';
 import { fetchAiSearch, notifyPickedUrl, notifyStartDownload, openMainWindow, waitForDownloadAck, youtubeVideoId, type SearchHit } from '@/lib/searchWindow';
 import { keepCurrentWindowAboveTaskbar } from '@/lib/workArea';
+import { getAppShell, getServerAppShell, subscribeAppShell } from '@/lib/appShell';
 import { applyLargeTypeClass, loadLargeType } from '@/utils/textSize';
 
 interface ChatMessage {
@@ -36,6 +37,8 @@ export default function AiChatPage() {
   const [watching, setWatching] = useState<SearchHit | null>(null);
   const [autoplay, setAutoplay] = useState(false);
   const [copiedId, setCopiedId] = useState('');
+  const shell = useSyncExternalStore(subscribeAppShell, getAppShell, getServerAppShell);
+  const desktop = shell === 'local';
   const scroller = useRef<HTMLDivElement>(null);
   const resultsPane = useRef<HTMLDivElement>(null);
   const playerBox = useRef<HTMLDivElement>(null);
@@ -52,7 +55,10 @@ export default function AiChatPage() {
     }
   }, []);
 
-  useEffect(() => keepCurrentWindowAboveTaskbar(), []);
+  useEffect(() => {
+    if (!desktop) return undefined;
+    return keepCurrentWindowAboveTaskbar();
+  }, [desktop]);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
@@ -157,7 +163,7 @@ export default function AiChatPage() {
               <Home className="h-4 w-4" />
               메인 화면
             </button>
-            <WindowControls />
+            {desktop && <WindowControls />}
           </div>
         </div>
       </header>

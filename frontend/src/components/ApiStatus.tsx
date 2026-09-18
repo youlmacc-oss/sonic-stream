@@ -23,9 +23,12 @@ export default function ApiStatus() {
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 8000);
+    const onSaved = () => void refresh();
+    window.addEventListener('sonicstream:status', onSaved);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener('sonicstream:status', onSaved);
     };
   }, []);
 

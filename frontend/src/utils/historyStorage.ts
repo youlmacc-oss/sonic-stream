@@ -1,5 +1,6 @@
 import type { DownloadHistoryItem } from '../types/history';
-import { getApiBase } from '../lib/constants';
+import { getApiBase, apiInit } from '../lib/constants';
+import { isLoopbackHost } from '../lib/site';
 import { EMPTY_HISTORY, HistorySnapshotCache, isHistoryItem } from './historySnapshot';
 
 export const HISTORY_STORAGE_KEY = 'sonicstream.history.v1';
@@ -53,15 +54,19 @@ export function loadHistory(): DownloadHistoryItem[] {
 }
 
 function pushHistoryToPc(items: DownloadHistoryItem[]): void {
-  if (typeof window === 'undefined') return;
+  const host = typeof window === 'undefined' ? '' : window.location?.hostname || '';
+  if (!host || !isLoopbackHost(host)) return;
   void fetch(`${getApiBase()}/api/local/history`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items }),
+    ...apiInit(),
   }).catch(() => undefined);
 }
 
 export async function hydrateHistoryFromPc(): Promise<DownloadHistoryItem[]> {
+  const host = typeof window === 'undefined' ? '' : window.location?.hostname || '';
+  if (!host || !isLoopbackHost(host)) return loadHistory();
   try {
     const response = await fetch(`${getApiBase()}/api/local/history`, { cache: 'no-store' });
     if (!response.ok) return loadHistory();

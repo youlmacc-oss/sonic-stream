@@ -267,7 +267,8 @@ page.tsx
   shell = useSyncExternalStore(appShell) → boot | public | local
   boot: 준비 화면(서버와 첫 페인트 동일)
   public: InstallNeeded만. HistoryPanel/WindowControls/로컬 API 없음
-  「메인 화면」: 루프백 또는 개발 PC 공인 IP(클라이언트 판별). 공개 사이트에서는 127.0.0.1:3000/
+  web: `?devpc=1` 화면 선택. 배포 API(`NEXT_PUBLIC_API_URL`). `/api/local/*` 없음
+  local: 루프백 3열. 같은 오리진 로컬 API. 배포 API 주소를 쓰지 않음
   local: 3열 + keepCurrentWindowAboveTaskbar + runtime/inspect
   History: HistorySnapshotCache. 같은 raw면 같은 배열 참조.
            getServerHistorySnapshot = EMPTY_HISTORY

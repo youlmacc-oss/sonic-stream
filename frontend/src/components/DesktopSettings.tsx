@@ -2,15 +2,16 @@
 
 import React, { useState } from 'react';
 import { FolderOpen, FolderSearch } from 'lucide-react';
-import { getApiBase, type RuntimeInfo } from '@/lib/constants';
+import { apiInit, getApiBase, type RuntimeInfo } from '@/lib/constants';
 
 interface DesktopSettingsProps {
   saveDir?: string | null;
   autostart?: boolean;
   onRuntime: (next: RuntimeInfo) => void;
+  variant?: 'desktop' | 'web';
 }
 
-export default function DesktopSettings({ saveDir, autostart, onRuntime }: DesktopSettingsProps) {
+export default function DesktopSettings({ saveDir, autostart, onRuntime, variant = 'desktop' }: DesktopSettingsProps) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -71,22 +72,33 @@ export default function DesktopSettings({ saveDir, autostart, onRuntime }: Deskt
       return;
     }
     setBusy(true);
+    setMessage(variant === 'web' ? '키를 확인하고 있습니다...' : '');
     try {
-      const response = await fetch(`${getApiBase()}/api/local/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ openai_api_key: key }),
-      });
-      const body = (await response.json()) as RuntimeInfo & { message?: string };
+      const response = await fetch(
+        variant === 'web' ? `${getApiBase()}/api/web/session` : `${getApiBase()}/api/local/settings`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ openai_api_key: key }),
+          ...apiInit(),
+        },
+      );
+      const body = (await response.json()) as RuntimeInfo & { message?: string; openai_label?: string; retention_label?: string };
       if (!response.ok) {
         setMessage(body.message || 'API 키를 저장하지 못했습니다.');
         return;
       }
       setApiKey('');
+      if (variant === 'web') {
+        window.dispatchEvent(new Event('sonicstream:status'));
+        const label = body.openai_label || '상태를 확인했습니다.';
+        setMessage(body.retention_label ? `${label} ${body.retention_label}` : label);
+        return;
+      }
       await apply(body);
       setMessage(body.openai_label || '저장하고 연결했습니다.');
     } catch {
-      setMessage('API 키를 저장하지 못했습니다.');
+      setMessage(variant === 'web' ? '배포 프로그램에 연결할 수 없습니다.' : 'API 키를 저장하지 못했습니다.');
     } finally {
       setBusy(false);
     }
@@ -115,6 +127,8 @@ export default function DesktopSettings({ saveDir, autostart, onRuntime }: Deskt
 
   return (
     <div className="mb-2 space-y-1.5 rounded-lg border border-zinc-600 bg-zinc-950 px-2.5 py-2">
+      {variant === 'desktop' && (
+        <>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="font-semibold text-white">저장 폴더</p>
         <div className="flex flex-wrap gap-1.5">
@@ -159,10 +173,14 @@ export default function DesktopSettings({ saveDir, autostart, onRuntime }: Deskt
           프로그램 종료
         </button>
       </div>
+        </>
+      )}
       <div className="space-y-1.5 border-t border-zinc-800 pt-1.5">
         <p className="font-semibold text-white">AI 연결</p>
         <p className="text-[length:var(--ss-body)] text-zinc-300">
-          OpenAI API 키를 이 컴퓨터에 넣으면 AI 검색을 쓸 수 있습니다.
+          {variant === 'web'
+            ? '키는 이 브라우저 세션에만 12시간 보관됩니다. 서버가 다시 시작되면 다시 입력해야 합니다. 이 컴퓨터나 서버 .env에 저장하지 않습니다.'
+            : 'OpenAI API 키를 이 컴퓨터에 넣으면 AI 검색을 쓸 수 있습니다.'}
         </p>
         <div className="flex flex-wrap gap-1.5">
           <input
@@ -182,6 +200,21 @@ export default function DesktopSettings({ saveDir, autostart, onRuntime }: Deskt
             저장하고 연결
           </button>
         </div>
+        {variant === 'web' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void fetch(`${getApiBase()}/api/web/session`, { method: 'DELETE', ...apiInit() }).then(() => {
+                window.dispatchEvent(new Event('sonicstream:status'));
+                setMessage('이 브라우저 세션의 키를 지웠습니다.');
+              }).catch(() => setMessage('키를 지우지 못했습니다.'));
+            }}
+            className="rounded-lg border border-zinc-500 px-2.5 text-[length:var(--ss-button)] text-zinc-200 hover:bg-zinc-800"
+          >
+            세션 키 지우기
+          </button>
+        )}
       </div>
       {message && <p className="text-[length:var(--ss-body)] text-zinc-200">{message}</p>}
     </div>

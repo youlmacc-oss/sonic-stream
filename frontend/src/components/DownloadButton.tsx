@@ -3,15 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, Download, FolderOpen, Loader2 } from 'lucide-react';
 import LocalFileActions from '@/components/LocalFileActions';
-import {
-  getApiBase,
-  qualityLabel,
-  resolveDownloadUrl,
-  type MediaFormat,
-  type MediaInfo,
-  type MediaQuality,
-  type RuntimeLocation,
-} from '@/lib/constants';
+import { apiInit, getApiBase, qualityLabel, resolveDownloadUrl, type MediaFormat, type MediaInfo, type MediaQuality, type RuntimeLocation } from '@/lib/constants';
 import { fileNameFromPath, formatBytes } from '@/lib/fileActions';
 import { useTabProgress } from '@/hooks/useTabProgress';
 import { addHistoryItem, persistActiveJob, updateHistoryItem } from '@/utils/historyStorage';
@@ -78,7 +70,7 @@ function parseEventData(raw: string): ProgressPayload | null {
 async function fetchJobWithRetry(jobId: string, tries = 4) {
   for (let index = 0; index < tries; index += 1) {
     try {
-      const response = await fetch(`${getApiBase()}/api/jobs/${jobId}`);
+      const response = await fetch(`${getApiBase()}/api/jobs/${jobId}`, apiInit());
       const payload = (await response.json()) as ProgressPayload & {
         error_message?: string;
         error_code?: string;
@@ -206,7 +198,10 @@ export default function DownloadButton({
 
   const subscribe = (nextJobId: string) => {
     sourcesRef.current.get(nextJobId)?.close();
-    const source = new EventSource(`${getApiBase()}/api/progress/${nextJobId}`);
+    const source = new EventSource(
+      `${getApiBase()}/api/progress/${nextJobId}`,
+      getApiBase() ? { withCredentials: true } : undefined,
+    );
     sourcesRef.current.set(nextJobId, source);
     eventSourceRef.current = source;
 
@@ -317,6 +312,7 @@ export default function DownloadButton({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: frozenUrl, type: frozenFormat, quality: frozenQuality }),
+        ...apiInit(),
       });
       const payload = (await response.json()) as { job_id?: string; message?: string; code?: string };
       if (!response.ok || !payload.job_id) {
@@ -351,7 +347,7 @@ export default function DownloadButton({
 
   const cancelJob = async () => {
     if (!jobId) return;
-    await fetch(`${getApiBase()}/api/jobs/${jobId}/cancel`, { method: 'POST' });
+    await fetch(`${getApiBase()}/api/jobs/${jobId}/cancel`, { method: 'POST', ...apiInit() });
     setStatus('error');
     setErrorMessage('다운로드를 취소했습니다.');
     if (historyIdRef.current) updateHistoryItem(historyIdRef.current, { status: 'cancelled' });
@@ -444,7 +440,7 @@ export default function DownloadButton({
             </div>
           </div>
         )}
-      </div>
+        </div>
     </div>
   );
 }

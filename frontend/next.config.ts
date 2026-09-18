@@ -1,9 +1,15 @@
 import type { NextConfig } from "next";
 
 const staticExport = process.env.SONICSTREAM_STATIC === "1";
+const deployedApi = staticExport
+  ? ""
+  : (process.env.NEXT_PUBLIC_API_URL || "https://sonic-stream-zc61.onrender.com").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   output: staticExport ? "export" : undefined,
+  env: {
+    NEXT_PUBLIC_API_URL: deployedApi,
+  },
   images: { unoptimized: true },
   async rewrites() {
     if (staticExport || process.env.NEXT_PUBLIC_API_URL) {
