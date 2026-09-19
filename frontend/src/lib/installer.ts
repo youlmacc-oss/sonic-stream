@@ -1,16 +1,15 @@
 import { getApiBase } from '@/lib/constants';
 import { isDeployedSite, isLoopbackHost } from '@/lib/site';
 
-export const TEST_RELEASE_TAG = 'windows-test';
-export const TEST_INSTALLER_FILENAME = 'SonicStream-Windows-024cf05c6fd8.zip';
-export const TEST_BUILD_ID = '024cf05c6fd84184085e3007658c393e1da44b8371864c355ec50af7c11e3ccc';
-export const TEST_INSTALLER_URL =
-  process.env.NEXT_PUBLIC_TEST_INSTALLER_URL
-  || `https://github.com/youlmacc-oss/sonic-stream/releases/download/${TEST_RELEASE_TAG}/${TEST_INSTALLER_FILENAME}`;
+export const STABLE_RELEASE_TAG = 'windows';
+export const STABLE_INSTALLER_FILENAME = 'SonicStream-Windows.zip';
+export const STABLE_BUILD_ID = 'f31c29c319a13fffdfbe5f74148ac6148678b7f3';
+export const STABLE_INSTALLER_URL =
+  process.env.NEXT_PUBLIC_INSTALLER_URL
+  || `https://github.com/youlmacc-oss/sonic-stream/releases/download/${STABLE_RELEASE_TAG}/${STABLE_INSTALLER_FILENAME}`;
 
 export const DEFAULT_INSTALLER_URL =
-  process.env.NEXT_PUBLIC_INSTALLER_URL
-  || TEST_INSTALLER_URL;
+  STABLE_INSTALLER_URL;
 
 export function isPublicInstallerUrl(url?: string | null): boolean {
   if (!url) return false;
@@ -34,7 +33,7 @@ export interface InstallerInfo {
 
 export function installerZipUrl(info?: InstallerInfo | null): string {
   if (typeof window !== 'undefined' && isDeployedSite()) {
-    return TEST_INSTALLER_URL;
+    return STABLE_INSTALLER_URL;
   }
   const candidate = info?.url || DEFAULT_INSTALLER_URL;
   if (isPublicInstallerUrl(candidate)) return candidate;

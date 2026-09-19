@@ -4,9 +4,9 @@ import React, { useState } from 'react';
 import { Download } from 'lucide-react';
 import type { RuntimeInfo } from '@/lib/constants';
 import {
-  TEST_BUILD_ID,
-  TEST_INSTALLER_FILENAME,
-  TEST_INSTALLER_URL,
+  STABLE_BUILD_ID,
+  STABLE_INSTALLER_FILENAME,
+  STABLE_INSTALLER_URL,
   buildSetupBat,
   installerZipUrl,
   startTextDownload,
@@ -31,10 +31,10 @@ export default function InstallNeeded({ runtime }: InstallNeededProps) {
 
   return (
     <section className="space-y-4 text-zinc-100">
-      <div className="space-y-2 rounded-xl border border-amber-600 bg-amber-950 p-4 text-[length:var(--ss-body)] leading-relaxed text-amber-50">
-        <p className="font-semibold">Windows 테스트 버전</p>
-        <p>정식 릴리스를 덮어쓰지 않은 사전 공개 파일입니다. 개발 폴더나 localhost가 필요하지 않습니다.</p>
-        <p className="font-mono text-zinc-100">빌드 {TEST_BUILD_ID.slice(0, 12)}</p>
+      <div className="space-y-2 rounded-xl border border-cyan-600 bg-cyan-950 p-4 text-[length:var(--ss-body)] leading-relaxed text-cyan-50">
+        <p className="font-semibold">SonicStream v1.3 정식 버전</p>
+        <p>YouTube 바로가기, API 키 자동 연결, 메시지 편집 기능이 포함된 안정화 버전입니다. 개발 폴더나 localhost가 필요하지 않습니다.</p>
+        <p className="font-mono text-zinc-100">빌드 {STABLE_BUILD_ID.slice(0, 7)}</p>
       </div>
 
       <div className="space-y-2 text-[length:var(--ss-body)] leading-relaxed">
@@ -51,8 +51,8 @@ export default function InstallNeeded({ runtime }: InstallNeededProps) {
       </div>
 
       <ol className="list-decimal space-y-1.5 pl-5 text-[length:var(--ss-body)] leading-relaxed text-zinc-100">
-        <li>아래 동의 후 <span className="font-semibold">Windows 테스트 버전 다운로드</span>를 누릅니다.</li>
-        <li>받은 <span className="font-semibold">{TEST_INSTALLER_FILENAME}</span>의 압축을 모두 풉니다.</li>
+        <li>아래 동의 후 <span className="font-semibold">Windows 정식 버전 다운로드</span>를 누릅니다.</li>
+        <li>받은 <span className="font-semibold">{STABLE_INSTALLER_FILENAME}</span>의 압축을 모두 풉니다.</li>
         <li>풀린 폴더의 <span className="font-semibold">설치하기.bat</span>을 엽니다.</li>
         <li>끝나면 바탕화면 또는 시작 메뉴의 SonicStream으로 실행합니다.</li>
       </ol>
@@ -70,11 +70,11 @@ export default function InstallNeeded({ runtime }: InstallNeededProps) {
       <button
         type="button"
         disabled={!agreed}
-        onClick={() => startUrlDownload(TEST_INSTALLER_URL, TEST_INSTALLER_FILENAME)}
+        onClick={() => startUrlDownload(STABLE_INSTALLER_URL, STABLE_INSTALLER_FILENAME)}
         className="inline-flex min-h-[var(--ss-tap)] w-full items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 text-[length:var(--ss-button)] font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-zinc-600"
       >
         <Download className="h-6 w-6" />
-        Windows 테스트 버전 다운로드
+        Windows 정식 버전 다운로드
       </button>
 
       <button
