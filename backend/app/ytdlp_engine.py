@@ -28,6 +28,7 @@ from app.jobs import store
 from app.models import InspectResponse, MediaQuality, MediaType
 from app.policy import decide_next
 from app.pot import apply_pot, pot_ready
+from app.platform_detector import format_platform_url, detect_platform
 from app.routes import available_routes, configured_routes, cool_route, next_route, recover_route
 from app.runtime import ejs_package_present, enabled_js_runtimes
 from app.eventlog import emit_event
@@ -519,14 +520,23 @@ def _hit_from_parts(
 ) -> dict[str, Any] | None:
     if not _is_watch_id(video_id):
         return None
+    
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    platform_info = format_platform_url(url)
+    
     return {
         "title": (title or "").strip() or video_id,
         "author": (author or "").strip() or "Unknown",
-        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "url": url,
         "thumbnail": thumbnail or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
         "duration": duration,
         "duration_known": bool(duration),
         "views": views,
+        # 플랫폼 정보 추가
+        "platform": platform_info["platform"],
+        "platform_name": platform_info["platform_name"],
+        "platform_icon": platform_info["platform_icon"],
+        "platform_color": platform_info["platform_color"],
     }
 
 
@@ -806,23 +816,74 @@ def search_hits_from_info(info: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def search_videos(query: str, limit: int = 30) -> dict[str, Any]:
+    """
+    다중 플랫폼 지원 비디오 검색.
+    URL인 경우 해당 플랫폼 감지, 검색어인 경우 여러 플랫폼에서 검색.
+    """
     cleaned = normalize_search_query(query)
     count = max(1, min(int(limit or 30), SEARCH_RESULT_MAX))
+    
+    # URL인지 확인
+    if cleaned.strip().startswith(("http://", "https://")):
+        platform = detect_platform(cleaned)
+        logger.info("Detected platform for URL: %s -> %s", cleaned, platform)
+        # URL의 경우 메타데이터만 추출 (검색이 아님)
+        return {"query": cleaned, "items": [], "detected_platform": platform}
+    
+    # 캐시 확인
     cached = _search_cache_get(cleaned, count)
     if cached is not None:
         return cached
+    
     items: list[dict[str, Any]] = []
+    
+    # YouTube 우선 검색 (기존 로직 유지)
     try:
         items = search_via_innertube(cleaned, count)
+        logger.info("Innertube search found %d items", len(items))
     except Exception as exc:
         logger.info("Innertube search failed: %s", exc)
+    
     if len(items) < 3:
         fallback = search_via_ytdlp(cleaned, min(count, YTDLP_SEARCH_MAX))
         if fallback:
             items = fallback
-    result = {"query": cleaned, "items": items[:count]}
+            logger.info("Fallback search found %d items", len(items))
+    
+    # 다른 플랫폼 결과도 추가 (제한적으로)
+    if len(items) < count:
+        try:
+            from app.multi_platform_search import search_vimeo, search_dailymotion
+            
+            # Vimeo에서 추가 검색 (적은 수)
+            remaining = count - len(items)
+            vimeo_limit = min(3, remaining // 2)
+            if vimeo_limit > 0:
+                vimeo_results = search_vimeo(cleaned, vimeo_limit)
+                items.extend(vimeo_results)
+                logger.info("Added %d Vimeo results", len(vimeo_results))
+            
+            # Dailymotion에서 추가 검색 (더 적은 수)
+            remaining = count - len(items)
+            dm_limit = min(2, remaining)
+            if dm_limit > 0:
+                dm_results = search_dailymotion(cleaned, dm_limit)
+                items.extend(dm_results)
+                logger.info("Added %d Dailymotion results", len(dm_results))
+                
+        except Exception as exc:
+            logger.info("Multi-platform search failed: %s", exc)
+    
+    result = {
+        "query": cleaned, 
+        "items": items[:count],
+        "platforms_searched": ["youtube", "vimeo", "dailymotion"],
+        "total_found": len(items)
+    }
+    
     if items:
         _search_cache_put(cleaned, count, result)
+    
     return result
 
 

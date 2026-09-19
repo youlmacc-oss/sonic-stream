@@ -12,6 +12,11 @@ export interface SearchHit {
   duration: string;
   duration_known?: boolean;
   views?: string;
+  // 플랫폼 정보 추가
+  platform?: string;
+  platform_name?: string;
+  platform_icon?: string;
+  platform_color?: string;
 }
 
 function placeOpenedWindow(popup: Window | null, box: ReturnType<typeof fitWindowInWorkArea>) {

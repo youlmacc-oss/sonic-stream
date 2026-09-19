@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Clipboard, HelpCircle, Music, Smartphone, Video } from 'lucide-react';
+import { Clipboard, HelpCircle, Music, Smartphone, Video, Download } from 'lucide-react';
 import ApiStatus from '@/components/ApiStatus';
 import DesktopSettings from '@/components/DesktopSettings';
 import DownloadButton, { type StartDownloadOpts } from '@/components/DownloadButton';
@@ -63,6 +63,14 @@ function AppHeader({
         {(local || showStatus) && <ApiStatus />}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
+        <a
+          href="/downloads"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-500 bg-zinc-800 px-2.5 py-1.5 text-[length:var(--ss-button)] font-medium text-zinc-100 hover:bg-zinc-700"
+          title="다운로드 관리"
+        >
+          <Download className="h-3.5 w-3.5" />
+          다운로드
+        </a>
         {showDevMain && (
           <button
             type="button"

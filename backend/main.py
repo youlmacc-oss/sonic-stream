@@ -85,6 +85,7 @@ from app.ytdlp_engine import (
     validate_url,
 )
 from app.youtube_auth import auth_status, log_auth_status
+from app.download_history import get_history_manager
 from error_logger import log_error, read_backlog
 
 logging.basicConfig(level=logging.INFO)
@@ -632,6 +633,15 @@ async def download(body: DownloadRequest, request: Request, response: Response) 
             return DownloadAccepted(job_id=admitted.existing_job_id)
         raise_api_error("BUSY")
 
+    # 다운로드 히스토리에 추가
+    history_manager = get_history_manager()
+    history_manager.add_download(
+        url=body.url,
+        title="",  # 제목은 나중에 메타데이터 추출 시 업데이트
+        media_type=body.type,
+        quality=body.quality
+    )
+
     store.create(
         job_id,
         body.type,
@@ -886,6 +896,71 @@ async def version() -> dict[str, object]:
         "yt_dlp": snapshot.get("yt_dlp"),
         "paths": [path for path in paths if path.startswith("/api") or path in {"/health", "/version"}],
     }
+
+
+# =============================================================================
+# Download History APIs
+# =============================================================================
+
+@app.get("/api/downloads/history")
+async def get_download_history(
+    limit: int = 50,
+    status: str | None = None,
+    platform: str | None = None
+) -> dict[str, Any]:
+    """다운로드 히스토리 조회"""
+    history_manager = get_history_manager()
+    
+    # 상태 필터 검증
+    status_filter = None
+    if status and status in ("pending", "downloading", "completed", "failed", "cancelled"):
+        status_filter = status
+    
+    downloads = history_manager.get_downloads(
+        limit=min(limit, 200),  # 최대 200개로 제한
+        status_filter=status_filter,
+        platform_filter=platform
+    )
+    
+    return {
+        "downloads": downloads,
+        "total": len(downloads)
+    }
+
+@app.get("/api/downloads/stats")
+async def get_download_stats() -> dict[str, Any]:
+    """다운로드 통계 정보"""
+    history_manager = get_history_manager()
+    return history_manager.get_download_stats()
+
+@app.post("/api/downloads/cleanup")
+async def cleanup_downloads() -> dict[str, Any]:
+    """존재하지 않는 파일의 기록 정리"""
+    require_local_desktop()
+    history_manager = get_history_manager()
+    cleaned_count = history_manager.cleanup_missing_files()
+    
+    return {
+        "message": "파일 정리 완료",
+        "cleaned_records": cleaned_count
+    }
+
+@app.delete("/api/downloads/{url:path}")
+async def delete_download_record(url: str, delete_file: bool = False) -> dict[str, Any]:
+    """다운로드 기록 삭제"""
+    require_local_desktop()
+    history_manager = get_history_manager()
+    
+    # URL 디코딩
+    import urllib.parse
+    decoded_url = urllib.parse.unquote(url)
+    
+    success = history_manager.delete_download_record(decoded_url, delete_file)
+    
+    if success:
+        return {"message": "기록이 삭제되었습니다"}
+    else:
+        raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다")
 
 
 _ui_dir = resolve_ui_dir()

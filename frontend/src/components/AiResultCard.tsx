@@ -27,9 +27,16 @@ export default function AiResultCard({ item, active = false, onWatch, onVideo, o
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="line-clamp-2 font-semibold text-white">{item.title}</p>
+          <div className="flex items-center gap-1.5 mb-1">
+            {item.platform_icon && (
+              <span className="text-sm" title={item.platform_name}>
+                {item.platform_icon}
+              </span>
+            )}
+            <p className="line-clamp-2 font-semibold text-white flex-1">{item.title}</p>
+          </div>
           {(item.author || item.views) && (
-            <p className="mt-0.5 truncate text-[length:var(--ss-body)] text-cyan-200">
+            <p className="truncate text-[length:var(--ss-body)] text-cyan-200">
               {item.author}
               {item.author && item.views ? " · " : ""}
               {item.views}
@@ -51,9 +58,10 @@ export default function AiResultCard({ item, active = false, onWatch, onVideo, o
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex min-h-[var(--ss-tap)] items-center justify-center gap-1 rounded-lg border border-zinc-500 px-2 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-800"
+          title={`${item.platform_name || 'YouTube'}에서 열기`}
         >
           <ExternalLink className="h-3.5 w-3.5" />
-          YouTube
+          {item.platform_name || 'YouTube'}
         </a>
         <button
           type="button"
