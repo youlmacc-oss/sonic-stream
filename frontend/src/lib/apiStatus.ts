@@ -38,15 +38,29 @@ export function hasSavedOpenaiKey(status: ConnectionStatus): boolean {
 
 async function tryAutoConnectLocalApiKey(): Promise<boolean> {
   try {
-    // 개발 환경이 아니면 자동 연결 시도하지 않음
-    if (typeof window === 'undefined' || !isLoopbackHost(window.location.hostname)) {
+    // 브라우저 환경이 아니면 시도하지 않음
+    if (typeof window === 'undefined') {
       return false;
     }
 
+    // 개발 노트북에서 배포된 사이트에 접속한 경우를 위해 로컬 백엔드 직접 시도
+    const localBackendUrl = 'http://localhost:8000';
+    
+    // 로컬 백엔드가 실행 중인지 먼저 확인
+    try {
+      const healthCheck = await fetch(`${localBackendUrl}/health`, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000) // 3초 타임아웃
+      });
+      if (!healthCheck.ok) return false;
+    } catch {
+      return false; // 로컬 백엔드가 실행되지 않음
+    }
+
     // 로컬 설정에서 API 키 가져오기
-    const localResponse = await fetch(`${getApiBase()}/api/local/settings`, {
+    const localResponse = await fetch(`${localBackendUrl}/api/local/settings`, {
       cache: 'no-store',
-      ...apiInit(),
+      signal: AbortSignal.timeout(5000)
     });
     
     if (!localResponse.ok) return false;
@@ -57,9 +71,9 @@ async function tryAutoConnectLocalApiKey(): Promise<boolean> {
     }
 
     // 환경 변수에서 실제 키 값을 가져와서 웹 세션에 설정
-    const envResponse = await fetch(`${getApiBase()}/api/env/OPENAI_API_KEY`, {
+    const envResponse = await fetch(`${localBackendUrl}/api/env/OPENAI_API_KEY`, {
       cache: 'no-store',
-      ...apiInit(),
+      signal: AbortSignal.timeout(5000)
     });
 
     if (!envResponse.ok) return false;
@@ -71,7 +85,7 @@ async function tryAutoConnectLocalApiKey(): Promise<boolean> {
       return false;
     }
 
-    // 웹 세션에 API 키 설정
+    // 현재 사이트의 웹 세션에 API 키 설정 (배포된 사이트든 로컬이든)
     const sessionResponse = await fetch(`${getApiBase()}/api/web/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
