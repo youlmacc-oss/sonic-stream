@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Copy, Home, RotateCw, Send } from 'lucide-react';
+import { Copy, Home, RotateCw, Send, Edit2, X, Check } from 'lucide-react';
 import AiResultCard from '@/components/AiResultCard';
 import AiSearchSkeleton from '@/components/AiSearchSkeleton';
 import ApiStatus from '@/components/ApiStatus';
@@ -37,6 +37,8 @@ export default function AiChatPage() {
   const [watching, setWatching] = useState<SearchHit | null>(null);
   const [autoplay, setAutoplay] = useState(false);
   const [copiedId, setCopiedId] = useState('');
+  const [editingId, setEditingId] = useState('');
+  const [editText, setEditText] = useState('');
   const shell = useSyncExternalStore(subscribeAppShell, getAppShell, getServerAppShell);
   const desktop = shell === 'local';
   const scroller = useRef<HTMLDivElement>(null);
@@ -116,6 +118,41 @@ export default function AiChatPage() {
     }, 1600);
   };
 
+  const startEdit = (message: ChatMessage) => {
+    setEditingId(message.id);
+    setEditText(message.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId('');
+    setEditText('');
+  };
+
+  const saveEdit = async () => {
+    const trimmed = editText.trim();
+    if (!trimmed || !editingId) return;
+    
+    // 편집된 메시지로 업데이트
+    setMessages((current) =>
+      current.map((msg) => 
+        msg.id === editingId ? { ...msg, text: trimmed } : msg
+      )
+    );
+    
+    // 편집 모드 종료
+    setEditingId('');
+    setEditText('');
+    
+    // 편집된 내용으로 다시 검색 (사용자 메시지인 경우만)
+    const editedMessage = messages.find(msg => msg.id === editingId);
+    if (editedMessage?.role === 'user') {
+      // 편집된 메시지 이후의 모든 메시지 삭제
+      setMessages((current) => current.slice(0, current.findIndex(msg => msg.id === editingId) + 1));
+      // 새로운 검색 수행
+      await sendPrompt(trimmed);
+    }
+  };
+
   const watchVideo = (item: SearchHit) => {
     setWatching(item);
     setAutoplay(true);
@@ -179,34 +216,91 @@ export default function AiChatPage() {
             {messages.map((message) => (
               <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`flex max-w-[94%] flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div
-                    className={`rounded-2xl px-3 py-2.5 text-[length:var(--ss-body)] leading-snug ${
-                      message.role === 'user'
-                        ? 'rounded-br-md bg-cyan-700 text-white'
-                        : 'rounded-bl-md border border-zinc-700 bg-zinc-900 text-zinc-100'
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{message.text}</p>
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    <button
-                      type="button"
-                      onClick={() => void copyMessage(message)}
-                      className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  {editingId === message.id ? (
+                    // 편집 모드
+                    <div className="w-full max-w-md">
+                      <textarea
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && e.ctrlKey) {
+                            e.preventDefault();
+                            void saveEdit();
+                          }
+                          if (e.key === 'Escape') {
+                            cancelEdit();
+                          }
+                        }}
+                        rows={Math.max(3, Math.ceil(editText.length / 50))}
+                        className="w-full resize-none rounded-xl border border-cyan-500 bg-zinc-800 px-3 py-2 text-[length:var(--ss-body)] leading-snug text-zinc-100 placeholder-zinc-400 focus:border-cyan-400 focus:outline-none"
+                        placeholder="메시지를 편집하세요..."
+                        autoFocus
+                      />
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void saveEdit()}
+                          disabled={!editText.trim()}
+                          className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg bg-cyan-600 px-2 text-[length:var(--ss-button)] font-semibold text-white hover:bg-cyan-500 disabled:bg-zinc-700"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                          저장
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg border border-zinc-600 px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          취소
+                        </button>
+                      </div>
+                      <p className="mt-1 text-[11px] text-zinc-400">
+                        Ctrl+Enter로 저장, Esc로 취소
+                      </p>
+                    </div>
+                  ) : (
+                    // 일반 모드
+                    <div
+                      className={`rounded-2xl px-3 py-2.5 text-[length:var(--ss-body)] leading-snug ${
+                        message.role === 'user'
+                          ? 'rounded-br-md bg-cyan-700 text-white'
+                          : 'rounded-bl-md border border-zinc-700 bg-zinc-900 text-zinc-100'
+                      }`}
                     >
-                      <Copy className="h-3.5 w-3.5" />
-                      {copiedId === message.id ? '복사됨' : '복사'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || !message.text.trim()}
-                      onClick={() => void sendPrompt(message.text)}
-                      className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:text-zinc-600"
-                    >
-                      <RotateCw className="h-3.5 w-3.5" />
-                      다시 보내기
-                    </button>
-                  </div>
+                      <p className="whitespace-pre-wrap">{message.text}</p>
+                    </div>
+                  )}
+                  {editingId !== message.id && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void copyMessage(message)}
+                        className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        {copiedId === message.id ? '복사됨' : '복사'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(message)}
+                        disabled={busy}
+                        className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:text-zinc-600"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                        편집
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || !message.text.trim()}
+                        onClick={() => void sendPrompt(message.text)}
+                        className="inline-flex min-h-[var(--ss-tap)] items-center gap-1 rounded-lg px-2 text-[length:var(--ss-button)] text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:text-zinc-600"
+                      >
+                        <RotateCw className="h-3.5 w-3.5" />
+                        다시 보내기
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
