@@ -476,6 +476,21 @@ async def local_shutdown(request: Request) -> dict[str, object]:
     return {"ok": True}
 
 
+@app.get("/api/local/get-openai-key")
+async def get_local_openai_key(request: Request) -> dict[str, object]:
+    """로컬 환경의 OpenAI 키 정보 반환 (키 값 포함)"""
+    require_local_desktop(request)
+    
+    from app.ai_search import openai_api_key
+    
+    # 로컬에 설정된 OpenAI API 키 가져오기
+    local_key = openai_api_key().strip()
+    if not local_key or not local_key.startswith('sk-'):
+        return {"available": False, "key": ""}
+    
+    return {"available": True, "key": local_key}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
     job = store.get(job_id)

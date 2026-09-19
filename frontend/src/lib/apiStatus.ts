@@ -70,26 +70,22 @@ async function tryAutoConnectLocalApiKey(): Promise<boolean> {
       return false;
     }
 
-    // 환경 변수에서 실제 키 값을 가져와서 웹 세션에 설정
-    const envResponse = await fetch(`${localBackendUrl}/api/env/OPENAI_API_KEY`, {
+    // 로컬 백엔드에서 OpenAI 키 정보 가져오기
+    const keyResponse = await fetch(`${localBackendUrl}/api/local/get-openai-key`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(5000)
     });
 
-    if (!envResponse.ok) return false;
-
-    const envData = (await envResponse.json()) as { value?: string };
-    const apiKey = envData.value?.trim();
+    if (!keyResponse.ok) return false;
     
-    if (!apiKey || !apiKey.startsWith('sk-')) {
-      return false;
-    }
+    const keyData = (await keyResponse.json()) as { key?: string; available?: boolean };
+    if (!keyData.available || !keyData.key) return false;
 
     // 현재 사이트의 웹 세션에 API 키 설정 (배포된 사이트든 로컬이든)
     const sessionResponse = await fetch(`${getApiBase()}/api/web/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ openai_api_key: apiKey }),
+      body: JSON.stringify({ openai_api_key: keyData.key }),
       cache: 'no-store',
       ...apiInit(),
     });
