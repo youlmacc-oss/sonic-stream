@@ -40,48 +40,72 @@ async function tryAutoConnectLocalApiKey(): Promise<boolean> {
   try {
     // 브라우저 환경이 아니면 시도하지 않음
     if (typeof window === 'undefined') {
+      console.log('🔍 Auto-connect: Not in browser environment');
       return false;
     }
+
+    console.log('🔍 Auto-connect: Starting auto API key connection...');
 
     // 개발 노트북에서 배포된 사이트에 접속한 경우를 위해 로컬 백엔드 직접 시도
     const localBackendUrl = 'http://localhost:8000';
     
     // 로컬 백엔드가 실행 중인지 먼저 확인
     try {
+      console.log('🔍 Auto-connect: Checking local backend health...');
       const healthCheck = await fetch(`${localBackendUrl}/health`, {
         cache: 'no-store',
         signal: AbortSignal.timeout(3000) // 3초 타임아웃
       });
-      if (!healthCheck.ok) return false;
-    } catch {
+      if (!healthCheck.ok) {
+        console.log('❌ Auto-connect: Health check failed:', healthCheck.status);
+        return false;
+      }
+      console.log('✅ Auto-connect: Local backend is healthy');
+    } catch (error) {
+      console.log('❌ Auto-connect: Backend connection failed:', error);
       return false; // 로컬 백엔드가 실행되지 않음
     }
 
     // 로컬 설정에서 API 키 가져오기
+    console.log('🔍 Auto-connect: Checking local settings...');
     const localResponse = await fetch(`${localBackendUrl}/api/local/settings`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(5000)
     });
     
-    if (!localResponse.ok) return false;
+    if (!localResponse.ok) {
+      console.log('❌ Auto-connect: Local settings failed:', localResponse.status);
+      return false;
+    }
     
     const localData = (await localResponse.json()) as { openai?: string };
     if (!localData.openai || localData.openai !== 'configured') {
+      console.log('❌ Auto-connect: OpenAI not configured locally:', localData.openai);
       return false;
     }
+    console.log('✅ Auto-connect: OpenAI is configured locally');
 
     // 로컬 백엔드에서 OpenAI 키 정보 가져오기
+    console.log('🔍 Auto-connect: Fetching OpenAI key...');
     const keyResponse = await fetch(`${localBackendUrl}/api/local/get-openai-key`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(5000)
     });
 
-    if (!keyResponse.ok) return false;
+    if (!keyResponse.ok) {
+      console.log('❌ Auto-connect: Key fetch failed:', keyResponse.status);
+      return false;
+    }
     
     const keyData = (await keyResponse.json()) as { key?: string; available?: boolean };
-    if (!keyData.available || !keyData.key) return false;
+    if (!keyData.available || !keyData.key) {
+      console.log('❌ Auto-connect: Key not available:', keyData);
+      return false;
+    }
+    console.log('✅ Auto-connect: Got API key, length:', keyData.key.length);
 
     // 현재 사이트의 웹 세션에 API 키 설정 (배포된 사이트든 로컬이든)
+    console.log('🔍 Auto-connect: Setting API key in web session...');
     const sessionResponse = await fetch(`${getApiBase()}/api/web/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -90,8 +114,15 @@ async function tryAutoConnectLocalApiKey(): Promise<boolean> {
       ...apiInit(),
     });
 
-    return sessionResponse.ok;
-  } catch {
+    if (sessionResponse.ok) {
+      console.log('✅ Auto-connect: Successfully set API key in web session');
+      return true;
+    } else {
+      console.log('❌ Auto-connect: Failed to set API key in web session:', sessionResponse.status);
+      return false;
+    }
+  } catch (error) {
+    console.log('❌ Auto-connect: Unexpected error:', error);
     return false;
   }
 }
@@ -113,7 +144,9 @@ export async function fetchConnectionStatus(): Promise<ConnectionStatus> {
     };
 
     // AI 키가 없고 개발 환경이면 자동 연결 시도
+    console.log('🔍 Connection status check:', { openai: status.openai, engine: status.engine });
     if (status.openai === 'no_key' && status.engine === 'ok') {
+      console.log('🔍 Attempting auto-connect...');
       const autoConnected = await tryAutoConnectLocalApiKey();
       if (autoConnected) {
         // 자동 연결 후 상태 다시 확인
