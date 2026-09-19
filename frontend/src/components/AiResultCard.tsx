@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Download, Music, Play } from 'lucide-react';
+import { Download, Music, Play, ExternalLink } from 'lucide-react';
 import type { SearchHit } from '@/lib/searchWindow';
 
 interface AiResultCardProps {
@@ -37,7 +37,7 @@ export default function AiResultCard({ item, active = false, onWatch, onVideo, o
           )}
         </div>
       </button>
-      <div className="mt-2 grid grid-cols-3 gap-1.5">
+      <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-1.5">
         <button
           type="button"
           onClick={() => onWatch(item)}
@@ -46,6 +46,15 @@ export default function AiResultCard({ item, active = false, onWatch, onVideo, o
           <Play className="h-3.5 w-3.5" />
           바로보기
         </button>
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-h-[var(--ss-tap)] items-center justify-center gap-1 rounded-lg border border-zinc-500 px-2 text-[length:var(--ss-button)] text-zinc-100 hover:bg-zinc-800"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          YouTube
+        </a>
         <button
           type="button"
           onClick={() => onVideo(item)}
