@@ -178,10 +178,8 @@ $FilesJson = Join-Path $Stage "FILES.json"
 
 $ZipTmp = Join-Path $Root "dist\SonicStream-Windows.next.zip"
 if (Test-Path $ZipTmp) { Remove-Item -Force $ZipTmp }
-Push-Location (Split-Path $Stage)
-tar -a -c -f $ZipTmp (Split-Path -Leaf $Stage)
-Assert-LastExit "zip create"
-Pop-Location
+Write-Host "압축 파일을 생성합니다..."
+Compress-Archive -Path $Stage -DestinationPath $ZipTmp -Force -CompressionLevel Optimal
 if (-not (Test-SonicStreamZip -ZipPath $ZipTmp -Fingerprint $SourceFingerprint)) {
     if (Test-Path $ZipTmp) { Remove-Item -Force $ZipTmp }
     throw "만든 ZIP이 필수 파일/지문 검사를 통과하지 못했습니다. 이전 ZIP은 그대로 둡니다."
